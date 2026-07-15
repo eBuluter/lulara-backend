@@ -526,43 +526,51 @@ app.get('/gundem', async (req, res) => {
       tools: [{ googleSearch: {} }],
     });
 
-    // 1. ADIM: Gerçekten arama yaptır — cevabın kendisini değil,
-    // Gemini'nin GERÇEKTEN bulduğu kaynakları (grounding metadata) kullanacağız.
-    // Bu, modelin başlık/URL uydurmasını (hallucination) engeller.
-    const aramaPrompt = `Search the web for 10 current, interesting news items and articles from this week about general science, discovery, space, biology, physics, history, philosophy, technology, or psychology. Mix different topics — don't focus on just one. Briefly note what you found.`;
+    // 1. ADIM: Gerçekten arama yaptır — hem serbest metni (modelin ne
+    // bulduğunu anlattığı kısım) hem de gerçek kaynakları (grounding
+    // metadata) alıyoruz. web.title çoğu zaman sadece site adı oluyor
+    // (örn. "Nature"), gerçek başlık değil — o yüzden asıl başlığı
+    // serbest metinden çıkaracağız.
+    const aramaPrompt = `Search the web for 10 current, interesting news items and articles from this week about general science, discovery, space, biology, physics, history, philosophy, technology, or psychology. Mix different topics — don't focus on just one. For each one, briefly note the SPECIFIC headline/topic you found (not just the publication name).`;
 
     const result = await gundemModeli.generateContent(aramaPrompt);
+    const aramaMetni = result.response.text();
     const grounding = result.response.candidates?.[0]?.groundingMetadata;
     const chunks = grounding?.groundingChunks || [];
 
     // Gerçek arama kaynaklarından (grounding) tekilleştirilmiş liste çıkar
-    const gorulenBasliklar = new Set();
+    // — burada web.title genelde sadece site adı, gerçek başlık DEĞİL
+    const gorulenUrller = new Set();
     const kaynaklar = [];
     for (const c of chunks) {
       const web = c.web;
-      if (!web || !web.uri || !web.title) continue;
-      const anahtar = web.title.trim().toLowerCase();
-      if (gorulenBasliklar.has(anahtar)) continue;
-      gorulenBasliklar.add(anahtar);
-      kaynaklar.push({ baslik: web.title.trim(), url: web.uri });
+      if (!web || !web.uri) continue;
+      if (gorulenUrller.has(web.uri)) continue;
+      gorulenUrller.add(web.uri);
+      kaynaklar.push({ siteAdi: (web.title || 'Web').trim(), url: web.uri });
       if (kaynaklar.length >= 10) break;
     }
 
     let haberler = [];
 
     if (kaynaklar.length > 0) {
-      // 2. ADIM: Bu GERÇEK başlıklara göre kategori + kısa özet ürettir.
-      // Model artık URL/başlık uydurmuyor, sadece elindeki gerçek başlığı
-      // kategorize edip özetliyor — çok daha düşük hata riski.
-      const listeMetni = kaynaklar.map((k, i) => `${i + 1}. ${k.baslik}`).join('\n');
-      const etiketPrompt = `Here is a list of real article titles found via web search:
-${listeMetni}
+      // 2. ADIM: Serbest arama metnini (gerçek başlıkların geçtiği yer)
+      // ve kaynak listesini birlikte vererek, HER kaynak için doğru
+      // GERÇEK başlığı + kategori + özet üretmesini istiyoruz.
+      const kaynakListesi = kaynaklar.map((k, i) => `${i + 1}. Source: ${k.siteAdi} (${k.url})`).join('\n');
+      const etiketPrompt = `You searched the web and found these sources:
+${kaynakListesi}
 
-For EACH numbered item, in the SAME order, respond with a JSON array in ${appDili} using this exact format:
+Here are your own notes from that search, describing what you actually found:
+"""
+${aramaMetni}
+"""
+
+For EACH numbered source above, in the SAME order, extract the SPECIFIC news headline/topic (not just the publication name) that corresponds to it, based on your notes. Respond with a JSON array in ${appDili} using this exact format:
 [
-  {"kategori": "one English word: Physics, Biology, Space, History, Philosophy, Technology, Psychology, or Chemistry", "kaynak": "the likely publication or source name based on the title/context", "ozet": "1 short sentence in ${appDili} summarizing what this article is likely about, based ONLY on the title"}
+  {"baslik": "the specific headline/topic in ${appDili}, NOT just the source name", "kategori": "one English word: Physics, Biology, Space, History, Philosophy, Technology, Psychology, or Chemistry", "kaynak": "publication name", "ozet": "1 short sentence in ${appDili} summarizing the article"}
 ]
-Return exactly ${kaynaklar.length} items in the array, matching the order above. Do not invent specific facts beyond what the title reasonably implies.`;
+Return exactly ${kaynaklar.length} items, matching the order above. If your notes don't mention a specific topic for a source, make a reasonable short topic guess from context — never just repeat the publication name as the headline.`;
 
       const etiketModeli = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
       const etiketSonuc = await etiketModeli.generateContent(etiketPrompt);
@@ -572,11 +580,11 @@ Return exactly ${kaynaklar.length} items in the array, matching the order above.
       try { etiketler = JSON.parse(etiketText); } catch { etiketler = []; }
 
       haberler = kaynaklar.map((k, i) => ({
-  baslik: k.baslik, // "baslik" anahtarı
-  url: k.url,
-  kategori: etiketler[i]?.kategori || 'Science',
-  kaynak: etiketler[i]?.kaynak || 'Web',
-  ozet: etiketler[i]?.ozet || 'No summary available.', // "ozet" anahtarı
+        baslik: etiketler[i]?.baslik || k.siteAdi,
+        url: k.url,
+        kategori: etiketler[i]?.kategori || 'Science',
+        kaynak: etiketler[i]?.kaynak || k.siteAdi,
+        ozet: etiketler[i]?.ozet || '',
       }));
     }
 
