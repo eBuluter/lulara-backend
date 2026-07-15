@@ -572,11 +572,11 @@ Return exactly ${kaynaklar.length} items in the array, matching the order above.
       try { etiketler = JSON.parse(etiketText); } catch { etiketler = []; }
 
       haberler = kaynaklar.map((k, i) => ({
-        baslik: k.baslik,
-        url: k.url,
-        kategori: etiketler[i]?.kategori || 'Science',
-        kaynak: etiketler[i]?.kaynak || 'Web',
-        ozet: etiketler[i]?.ozet || '',
+  baslik: k.baslik, // "baslik" anahtarı
+  url: k.url,
+  kategori: etiketler[i]?.kategori || 'Science',
+  kaynak: etiketler[i]?.kaynak || 'Web',
+  ozet: etiketler[i]?.ozet || 'No summary available.', // "ozet" anahtarı
       }));
     }
 
