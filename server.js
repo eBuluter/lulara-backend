@@ -22,7 +22,7 @@ const PORT = process.env.PORT || 3000;
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
 app.use(cors());
-app.use(express.json()); // gelen isteklerin JSON formatında okunmasını sağlar
+app.use(express.json({ limit: '25mb' })); // gelen isteklerin JSON formatında okunmasını sağlar - fotoğraflar için limit büyütüldü
 
 // ---------------------------------------------------------
 // SİSTEM PROMPTU - AI'nin "nasıl davranması gerektiği" talimatı
@@ -47,6 +47,9 @@ TYPE B - Complex/Process: A multi-step problem, a mechanism, a proof, a concept 
 Use the step system below.
 
 If you are unsure, default to TYPE A. Less is more.
+
+CRITICAL SELF-CHECK — catch the most common mistake:
+If, while writing your answer, you notice yourself typing words like "first," "second," "third," "next," "then," "step 1," "step 2," or numbering a sequence (1. ... 2. ... 3. ...) inside PLAIN TEXT — STOP. This is a hard signal that the content is actually TYPE B and belongs in [ADIM] boxes, not prose. Never narrate a step-by-step process in flowing paragraphs. If the explanation has stages, each stage is its own [ADIM] block. There is no valid case where a multi-stage process should be written as plain numbered text instead of step boxes.
 
 STEP 2: HOW TO RESPOND
 
@@ -528,10 +531,10 @@ app.get('/gundem', async (req, res) => {
 Respond ONLY in ${appDili}, in this exact JSON format:
 {
   "haberler": [
-    {"baslik": "short catchy title", "kaynak": "source name", "url": "https://...", "ozet": "1 sentence summary"}
+    {"baslik": "short catchy title", "kategori": "one word category like Physics, Biology, Space, History, Philosophy, Technology, Psychology, Chemistry", "kaynak": "source name", "url": "https://...", "ozet": "1 sentence summary"}
   ]
 }
-Prefer reputable sources (major science publications, universities, established news outlets). Keep titles short (under 12 words).`;
+Prefer reputable sources (major science publications, universities, established news outlets). Keep titles short (under 12 words). The "kategori" field must always be in English regardless of the response language, so it can be matched to a color on the client.`;
 
     const result = await gundemModeli.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
