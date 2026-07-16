@@ -63,6 +63,9 @@ async function kimlikDogrula(req, res, next) {
   try {
     const decoded = await admin.auth().verifyIdToken(token);
     req.uid = decoded.uid;
+    // Firebase, misafir (anonim) girişleri "anonymous" sağlayıcısıyla işaretler.
+    // Bunu kredi sistemi, misafirlere daha düşük tavan vermek için kullanır.
+    req.misafirMi = decoded.firebase?.sign_in_provider === 'anonymous';
     next();
   } catch (e) {
     return res.status(401).json({ hata: 'Geçersiz veya süresi dolmuş oturum.', kod: 'GECERSIZ_OTURUM' });
@@ -71,9 +74,13 @@ async function kimlikDogrula(req, res, next) {
 
 // ---------------------------------------------------------
 // KREDİ SİSTEMİ — saatlik yenilenen "enerji" mekaniği.
-// Ücretsiz: 200 kapasite, saatte 50 yenilenir.
+// Misafir (hesapsız): 50 kapasite, saatte 15 yenilenir — uygulamayı
+//   silip tekrar kurarak sınırsız kredi almayı caydırmak için düşük tutuluyor.
+// Kayıtlı (Google girişi): 200 kapasite, saatte 50 yenilenir.
 // Premium: 2000 kapasite, saatte 500 yenilenir.
 // ---------------------------------------------------------
+const MISAFIR_MAKS_KREDI = 50;
+const MISAFIR_SAATLIK_YENILENME = 15;
 const UCRETSIZ_MAKS_KREDI = 200;
 const UCRETSIZ_SAATLIK_YENILENME = 50;
 const PREMIUM_MAKS_KREDI = 2000;
@@ -84,8 +91,15 @@ function krediYenile(veri) {
   const simdi = Date.now();
   const sonYenilenme = veri.sonYenilenmeZamani || simdi;
   const gecenSaat = (simdi - sonYenilenme) / (1000 * 60 * 60);
-  const yenilenmeOrani = veri.premium ? PREMIUM_SAATLIK_YENILENME : UCRETSIZ_SAATLIK_YENILENME;
-  const maksKredi = veri.premium ? PREMIUM_MAKS_KREDI : UCRETSIZ_MAKS_KREDI;
+
+  let yenilenmeOrani, maksKredi;
+  if (veri.premium) {
+    yenilenmeOrani = PREMIUM_SAATLIK_YENILENME; maksKredi = PREMIUM_MAKS_KREDI;
+  } else if (veri.misafir) {
+    yenilenmeOrani = MISAFIR_SAATLIK_YENILENME; maksKredi = MISAFIR_MAKS_KREDI;
+  } else {
+    yenilenmeOrani = UCRETSIZ_SAATLIK_YENILENME; maksKredi = UCRETSIZ_MAKS_KREDI;
+  }
 
   if (gecenSaat > 0) {
     const yenilenenMiktar = Math.floor(gecenSaat * yenilenmeOrani);
@@ -103,22 +117,34 @@ function krediYenile(veri) {
 }
 
 // Yeni kullanıcı için varsayılan kredi verisi
-function varsayilanKrediVerisi() {
+function varsayilanKrediVerisi(misafirMi = false) {
   return {
-    kredi: UCRETSIZ_MAKS_KREDI,
+    kredi: misafirMi ? MISAFIR_MAKS_KREDI : UCRETSIZ_MAKS_KREDI,
     sonYenilenmeZamani: Date.now(),
     premium: false,
+    misafir: misafirMi,
     streakFreezeHakki: 1, // yeni kullanıcıya küçük bir başlangıç hediyesi
   };
 }
 
+// Bir kullanıcı misafirken sonradan Google ile giriş yaparsa (aynı UID
+// korunur, sadece sağlayıcı değişir), bunu tespit edip kaydı GÜNCELLER.
+// Tek yönlü: misafirden kayıtlıya geçer, tersi asla olmaz.
+function misafirDurumunuGuncelle(veri, gercekMisafirMi) {
+  if (veri.misafir === true && gercekMisafirMi === false) {
+    veri.misafir = false;
+  }
+  return veri;
+}
+
 // Belirtilen miktarda krediyi güvenli şekilde (transaction ile) düşer.
 // Yetersizse hata fırlatır. req.uid'nin kimlikDogrula'dan geldiği varsayılır.
-async function krediDus(uid, miktar) {
+async function krediDus(uid, miktar, misafirMi = false) {
   const ref = db.collection('kullanicilar').doc(uid);
   return db.runTransaction(async (t) => {
     const dokuman = await t.get(ref);
-    let veri = dokuman.exists ? dokuman.data() : varsayilanKrediVerisi();
+    let veri = dokuman.exists ? dokuman.data() : varsayilanKrediVerisi(misafirMi);
+    veri = misafirDurumunuGuncelle(veri, misafirMi);
     veri = krediYenile(veri);
 
     if (veri.kredi < miktar) {
@@ -137,7 +163,7 @@ async function krediDus(uid, miktar) {
 function krediGerekli(miktar) {
   return async (req, res, next) => {
     try {
-      req.kalanKredi = await krediDus(req.uid, miktar);
+      req.kalanKredi = await krediDus(req.uid, miktar, req.misafirMi);
       next();
     } catch (hata) {
       if (hata.message === 'YETERSIZ_KREDI') {
@@ -158,7 +184,8 @@ app.get('/kredi-durumu', kimlikDogrula, async (req, res) => {
   try {
     const ref = db.collection('kullanicilar').doc(req.uid);
     const dokuman = await ref.get();
-    let veri = dokuman.exists ? dokuman.data() : varsayilanKrediVerisi();
+    let veri = dokuman.exists ? dokuman.data() : varsayilanKrediVerisi(req.misafirMi);
+    veri = misafirDurumunuGuncelle(veri, req.misafirMi);
     veri = krediYenile(veri);
     await ref.set(veri, { merge: true });
 
@@ -168,11 +195,12 @@ app.get('/kredi-durumu', kimlikDogrula, async (req, res) => {
     const bugunkuReklamSayisi = veri.reklamOduluGunu === bugunStr ? (veri.reklamOduluSayisi || 0) : 0;
     const kalanReklamHakki = Math.max(0, REKLAM_GUNLUK_LIMIT - bugunkuReklamSayisi);
 
-    const maksKredi = veri.premium ? PREMIUM_MAKS_KREDI : UCRETSIZ_MAKS_KREDI;
+    const maksKredi = veri.premium ? PREMIUM_MAKS_KREDI : (veri.misafir ? MISAFIR_MAKS_KREDI : UCRETSIZ_MAKS_KREDI);
     res.json({
       kredi: veri.kredi,
       maksKredi,
       premium: veri.premium || false,
+      misafir: veri.misafir || false,
       streakFreezeHakki: veri.streakFreezeHakki || 0,
       kalanReklamHakki,
       reklamGunlukLimit: REKLAM_GUNLUK_LIMIT,
@@ -197,7 +225,7 @@ app.post('/streak-freeze-kullan', kimlikDogrula, async (req, res) => {
 
     await db.runTransaction(async (t) => {
       const dok = await t.get(ref);
-      let veri = dok.exists ? dok.data() : varsayilanKrediVerisi();
+      let veri = dok.exists ? dok.data() : varsayilanKrediVerisi(req.misafirMi);
       const mevcutHak = veri.streakFreezeHakki || 0;
 
       if (mevcutHak > 0) {
@@ -1103,7 +1131,7 @@ app.post('/arastir', aiIstekSiniri, kimlikDogrula, async (req, res) => {
 
     // Önbellekte yok — gerçekten Gemini'ye gideceğiz, ŞİMDİ krediyi düş
     try {
-      await krediDus(req.uid, 25);
+      await krediDus(req.uid, 25, req.misafirMi);
     } catch (krediHatasi) {
       if (krediHatasi.message === 'YETERSIZ_KREDI') {
         return res.status(402).json({
