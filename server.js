@@ -13,6 +13,9 @@ require('dotenv').config(); // .env dosyasındaki gizli bilgileri (API key gibi)
 const express = require('express'); // basit bir web sunucusu kurmamızı sağlayan kütüphane
 const cors = require('cors'); // Flutter uygulamasının bu sunucuya istek atmasına izin verir
 const { GoogleGenerativeAI } = require('@google/generative-ai'); // Gemini API'sine bağlanmamızı sağlayan resmi araç
+const rateLimit = require('express-rate-limit'); // tek bir kullanıcının/IP'nin kotayı tüketmesini engeller
+const admin = require('firebase-admin'); // kullanıcı kimliğini doğrulamak ve Firestore'a erişmek için
+const crypto = require('crypto'); // AdMob'un reklam ödülü imzasını doğrulamak için (Node yerleşik)
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -21,8 +24,250 @@ const PORT = process.env.PORT || 3000;
 // API key'i .env dosyasından okunuyor, koda asla yazılmıyor
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
+// ---------------------------------------------------------
+// FIREBASE ADMIN — kullanıcı kimliğini doğrulamak ve kredi
+// verilerini Firestore'da tutmak için. Servis hesabı JSON'u
+// .env'de base64 olarak saklanıyor (satır sonu/tırnak sorunları
+// yaşamamak için)
+// ---------------------------------------------------------
+const servisHesabiJson = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString('utf-8');
+admin.initializeApp({
+  credential: admin.credential.cert(JSON.parse(servisHesabiJson)),
+});
+const db = admin.firestore();
+
 app.use(cors());
 app.use(express.json({ limit: '25mb' })); // gelen isteklerin JSON formatında okunmasını sağlar - fotoğraflar için limit büyütüldü
+
+// Gemini'ye giden tüm istekler için genel bir hız sınırı — normal kullanımı
+// hiç etkilemez ama bir hata/döngü/kötüye kullanım tüm bütçeyi bitiremesin diye
+const aiIstekSiniri = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 dakikalık pencere
+  max: 60, // aynı IP'den 15 dakikada en fazla 60 AI isteği
+  message: { hata: 'Too many requests. Please slow down and try again in a few minutes.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ---------------------------------------------------------
+// KİMLİK DOĞRULAMA — her istekte Authorization: Bearer <token>
+// header'ını Firebase ile doğrular. Geçersizse istek reddedilir.
+// Uygulamadan geçmeyen kimse backend'i kullanamaz.
+// ---------------------------------------------------------
+async function kimlikDogrula(req, res, next) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ hata: 'Giriş gerekli.', kod: 'GIRIS_GEREKLI' });
+  }
+  const token = authHeader.split('Bearer ')[1];
+  try {
+    const decoded = await admin.auth().verifyIdToken(token);
+    req.uid = decoded.uid;
+    next();
+  } catch (e) {
+    return res.status(401).json({ hata: 'Geçersiz veya süresi dolmuş oturum.', kod: 'GECERSIZ_OTURUM' });
+  }
+}
+
+// ---------------------------------------------------------
+// KREDİ SİSTEMİ — saatlik yenilenen "enerji" mekaniği.
+// Ücretsiz: 200 kapasite, saatte 50 yenilenir.
+// Premium: 2000 kapasite, saatte 500 yenilenir.
+// ---------------------------------------------------------
+const UCRETSIZ_MAKS_KREDI = 200;
+const UCRETSIZ_SAATLIK_YENILENME = 50;
+const PREMIUM_MAKS_KREDI = 2000;
+const PREMIUM_SAATLIK_YENILENME = 500;
+
+// Verilen kullanıcı verisine, geçen zamana göre kredi yenilemesi uygular
+function krediYenile(veri) {
+  const simdi = Date.now();
+  const sonYenilenme = veri.sonYenilenmeZamani || simdi;
+  const gecenSaat = (simdi - sonYenilenme) / (1000 * 60 * 60);
+  const yenilenmeOrani = veri.premium ? PREMIUM_SAATLIK_YENILENME : UCRETSIZ_SAATLIK_YENILENME;
+  const maksKredi = veri.premium ? PREMIUM_MAKS_KREDI : UCRETSIZ_MAKS_KREDI;
+
+  if (gecenSaat > 0) {
+    const yenilenenMiktar = Math.floor(gecenSaat * yenilenmeOrani);
+    if (yenilenenMiktar > 0) {
+      const mevcutKredi = veri.kredi || 0;
+      // ÖNEMLİ: reklam ödülüyle kapasitenin üzerine çıkmış olabilir
+      // (örn. 180/200 iken +100 reklam ödülü = 280). Bu durumda saatlik
+      // yenileme onu asla AŞAĞI çekmemeli — sadece normal aralıktaysa
+      // yukarı taşır, kapasite üstündeyse olduğu gibi bırakır.
+      veri.kredi = Math.max(mevcutKredi, Math.min(maksKredi, mevcutKredi + yenilenenMiktar));
+      veri.sonYenilenmeZamani = simdi;
+    }
+  }
+  return veri;
+}
+
+// Yeni kullanıcı için varsayılan kredi verisi
+function varsayilanKrediVerisi() {
+  return {
+    kredi: UCRETSIZ_MAKS_KREDI,
+    sonYenilenmeZamani: Date.now(),
+    premium: false,
+    streakFreezeHakki: 0,
+  };
+}
+
+// Belirtilen miktarda krediyi güvenli şekilde (transaction ile) düşer.
+// Yetersizse hata fırlatır. req.uid'nin kimlikDogrula'dan geldiği varsayılır.
+async function krediDus(uid, miktar) {
+  const ref = db.collection('kullanicilar').doc(uid);
+  return db.runTransaction(async (t) => {
+    const dokuman = await t.get(ref);
+    let veri = dokuman.exists ? dokuman.data() : varsayilanKrediVerisi();
+    veri = krediYenile(veri);
+
+    if (veri.kredi < miktar) {
+      const hata = new Error('YETERSIZ_KREDI');
+      hata.kalanKredi = veri.kredi;
+      throw hata;
+    }
+
+    veri.kredi -= miktar;
+    t.set(ref, veri, { merge: true });
+    return veri.kredi;
+  });
+}
+
+// Express middleware hâli — belirli bir maliyeti olan endpoint'lere takılır
+function krediGerekli(miktar) {
+  return async (req, res, next) => {
+    try {
+      req.kalanKredi = await krediDus(req.uid, miktar);
+      next();
+    } catch (hata) {
+      if (hata.message === 'YETERSIZ_KREDI') {
+        return res.status(402).json({
+          hata: 'Yetersiz kredi.',
+          kod: 'YETERSIZ_KREDI',
+          kalanKredi: hata.kalanKredi,
+        });
+      }
+      console.error('Kredi düşme hatası:', hata);
+      return res.status(500).json({ hata: 'Kredi kontrolü başarısız oldu.' });
+    }
+  };
+}
+
+// Kullanıcının güncel kredi durumunu döner (yeniler ama düşmez)
+app.get('/kredi-durumu', kimlikDogrula, async (req, res) => {
+  try {
+    const ref = db.collection('kullanicilar').doc(req.uid);
+    const dokuman = await ref.get();
+    let veri = dokuman.exists ? dokuman.data() : varsayilanKrediVerisi();
+    veri = krediYenile(veri);
+    await ref.set(veri, { merge: true });
+
+    const maksKredi = veri.premium ? PREMIUM_MAKS_KREDI : UCRETSIZ_MAKS_KREDI;
+    res.json({
+      kredi: veri.kredi,
+      maksKredi,
+      premium: veri.premium || false,
+      streakFreezeHakki: veri.streakFreezeHakki || 0,
+    });
+  } catch (hata) {
+    console.error('Kredi durumu hatası:', hata);
+    res.status(500).json({ hata: 'Kredi durumu alınamadı.' });
+  }
+});
+
+// ---------------------------------------------------------
+// ADMOB SSV (SERVER-SIDE VERIFICATION) — reklam ödülü doğrulaması
+// Google, kullanıcı ödüllü reklamı tamamladığında BU adrese kendi
+// sunucularından imzalı bir istek gönderir. Biz imzayı Google'ın
+// açık anahtarlarıyla doğrulayıp, doğruysa krediyi ekliyoruz.
+// Bu, sahte "izledim" isteklerini imkansız hâle getirir çünkü
+// imza sadece Google'ın özel anahtarıyla üretilebilir.
+// ---------------------------------------------------------
+const ADMOB_ANAHTAR_ADRESI = 'https://www.gstatic.com/admob/reward/verifier-keys.json';
+const REKLAM_ODUL_MIKTARI = 100;
+
+let _admobAnahtarlari = null;
+let _admobAnahtarSonCekilme = 0;
+const ADMOB_ANAHTAR_ONBELLEK_SURESI = 12 * 60 * 60 * 1000; // 12 saat
+
+async function admobAnahtarlariniGetir() {
+  const simdi = Date.now();
+  if (_admobAnahtarlari && (simdi - _admobAnahtarSonCekilme) < ADMOB_ANAHTAR_ONBELLEK_SURESI) {
+    return _admobAnahtarlari;
+  }
+  const yanit = await fetch(ADMOB_ANAHTAR_ADRESI);
+  const veri = await yanit.json();
+  _admobAnahtarlari = veri.keys || [];
+  _admobAnahtarSonCekilme = simdi;
+  return _admobAnahtarlari;
+}
+
+// Google'ın base64url imzasını Node'un anlayacağı standart Buffer'a çevirir
+function base64UrlToBuffer(base64url) {
+  let base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
+  while (base64.length % 4) base64 += '=';
+  return Buffer.from(base64, 'base64');
+}
+
+app.get('/reklam-ssv-callback', async (req, res) => {
+  try {
+    const tamSorgu = req.url.split('?')[1] || '';
+    const imzaBaslangici = tamSorgu.indexOf('&signature=');
+    if (imzaBaslangici === -1) return res.status(400).send('Eksik imza');
+
+    // İmzalanan içerik: signature parametresinden ÖNCEKİ her şey
+    // (key_id dahil) — Google'ın imzaladığı tam olarak budur
+    const imzalananIcerik = tamSorgu.substring(0, imzaBaslangici);
+
+    const { key_id, signature, user_id, transaction_id } = req.query;
+    if (!key_id || !signature || !user_id || !transaction_id) {
+      return res.status(400).send('Eksik parametre');
+    }
+
+    const anahtarlar = await admobAnahtarlariniGetir();
+    const anahtar = anahtarlar.find((k) => String(k.keyId) === String(key_id));
+    if (!anahtar) return res.status(400).send('Bilinmeyen anahtar');
+
+    const publicKey = crypto.createPublicKey(anahtar.pem);
+    const dogrulayici = crypto.createVerify('SHA256');
+    dogrulayici.update(imzalananIcerik);
+    const imzaBuffer = base64UrlToBuffer(signature);
+
+    // Google'ın imzaları "IEEE P1363" ham formatında (DER değil)
+    const gecerliMi = dogrulayici.verify(
+      { key: publicKey, dsaEncoding: 'ieee-p1363' },
+      imzaBuffer
+    );
+
+    if (!gecerliMi) {
+      console.error('SSV imza doğrulaması BAŞARISIZ — sahte istek olabilir');
+      return res.status(400).send('Geçersiz imza');
+    }
+
+    // Tekrar (replay) koruması — aynı işlem ID'si iki kez kredi vermesin
+    const islemRef = db.collection('islenmis_reklam_odulleri').doc(String(transaction_id));
+    const islemDoku = await islemRef.get();
+    if (islemDoku.exists) {
+      return res.status(200).send('OK'); // zaten işlendi, Google'a yine de 200 dön
+    }
+
+    // Krediyi ekle — kapasiteyi aşabilir, bu normal (kazanılmış bonus)
+    const kullaniciRef = db.collection('kullanicilar').doc(String(user_id));
+    await db.runTransaction(async (t) => {
+      const dok = await t.get(kullaniciRef);
+      let veri = dok.exists ? dok.data() : varsayilanKrediVerisi();
+      veri = krediYenile(veri);
+      veri.kredi = (veri.kredi || 0) + REKLAM_ODUL_MIKTARI;
+      t.set(kullaniciRef, veri, { merge: true });
+      t.set(islemRef, { zaman: Date.now(), userId: String(user_id) });
+    });
+
+    res.status(200).send('OK');
+  } catch (hata) {
+    console.error('SSV callback hatası:', hata);
+    res.status(500).send('Sunucu hatası');
+  }
+});
 
 // ---------------------------------------------------------
 // SİSTEM PROMPTU - AI'nin "nasıl davranması gerektiği" talimatı
@@ -133,7 +378,7 @@ const MAKS_GECMIS_MESAJ = 16;
 // ---------------------------------------------------------
 // STREAMING ENDPOINT - kelime kelime akıcı cevap
 // ---------------------------------------------------------
-app.post('/sohbet-stream', async (req, res) => {
+app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, krediGerekli(10), async (req, res) => {
   try {
     const { mesajlar, dil } = req.body;
 
@@ -234,7 +479,7 @@ If the student writes in ${appDili} (matching the app language), respond normall
 // ---------------------------------------------------------
 // ANA ENDPOINT - Flutter uygulaması buraya soru gönderecek
 // ---------------------------------------------------------
-app.post('/sohbet', async (req, res) => {
+app.post('/sohbet', aiIstekSiniri, kimlikDogrula, krediGerekli(10), async (req, res) => {
   try {
     const { mesajlar, dil } = req.body;
 
@@ -427,7 +672,7 @@ function _gorselEtiketiniAyikla(metin) {
 // ---------------------------------------------------------
 // QUIZ ENDPOINT - verilen konuda çoktan seçmeli veya açık uçlu soru üretir
 // ---------------------------------------------------------
-app.post('/quiz', async (req, res) => {
+app.post('/quiz', aiIstekSiniri, kimlikDogrula, krediGerekli(15), async (req, res) => {
   try {
     const { konu, zorluk = 'orta', kacinilacakSorular = [] } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
@@ -462,7 +707,7 @@ Her soruda sadece bir doğru cevap olsun. Aciklama 1-2 cümle olsun.`;
 // ---------------------------------------------------------
 // QUIZ DEĞERLENDİRME ENDPOINT - açık uçlu sorularda öğrencinin cevabını değerlendirir
 // ---------------------------------------------------------
-app.post('/quiz-degerlendir', async (req, res) => {
+app.post('/quiz-degerlendir', aiIstekSiniri, kimlikDogrula, krediGerekli(5), async (req, res) => {
   try {
     const { soru, dogruCevap, kullaniciCevabi } = req.body;
 
@@ -493,7 +738,7 @@ SADECE JSON formatında yanıt ver:
 // ---------------------------------------------------------
 // KART OLUŞTURMA ENDPOINT - verilen konuda flashcard üretir
 // ---------------------------------------------------------
-app.post('/kartlar-olustur', async (req, res) => {
+app.post('/kartlar-olustur', aiIstekSiniri, kimlikDogrula, krediGerekli(15), async (req, res) => {
   try {
     const { konu } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
@@ -579,7 +824,7 @@ async function sayfaBasligiCek(url) {
   }
 }
 
-app.get('/gundem', async (req, res) => {
+app.get('/gundem', aiIstekSiniri, kimlikDogrula, async (req, res) => {
   try {
     const dil = req.query.dil || 'en';
     const simdi = Date.now();
@@ -750,12 +995,42 @@ Keep titles short (under 12 words).`;
 
 
 // ---------------------------------------------------------
-// ARAŞTIRMA ENDPOINT
+// ARAŞTIRMA ENDPOINT — aynı konuyu tekrar arayan farklı kullanıcılar
+// için 1 saatlik önbellek. "Türev nedir" gibi popüler konular
+// tekrar tekrar Gemini'ye gitmez.
 // ---------------------------------------------------------
-app.post('/arastir', async (req, res) => {
+const _arastirmaOnbellek = new Map(); // anahtar: "dil:konu" -> {veri, zaman}
+const ARASTIRMA_ONBELLEK_SURESI = 60 * 60 * 1000; // 1 saat
+
+app.post('/arastir', aiIstekSiniri, kimlikDogrula, async (req, res) => {
   try {
-    const { konu } = req.body;
+    const { konu, dil } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
+
+    // Önbellek anahtarı: dil + normalize edilmiş konu (küçük harf, boşluk kırpılmış)
+    const anahtarKonu = konu.trim().toLowerCase();
+    const onbellekAnahtari = `${dil || 'en'}:${anahtarKonu}`;
+    const simdi = Date.now();
+
+    const onbellekteki = _arastirmaOnbellek.get(onbellekAnahtari);
+    if (onbellekteki && (simdi - onbellekteki.zaman) < ARASTIRMA_ONBELLEK_SURESI) {
+      // Önbellekten geldi — Gemini'ye gitmedik, kullanıcıdan kredi düşme
+      return res.json({ ...onbellekteki.veri, onbellekten: true });
+    }
+
+    // Önbellekte yok — gerçekten Gemini'ye gideceğiz, ŞİMDİ krediyi düş
+    try {
+      await krediDus(req.uid, 25);
+    } catch (krediHatasi) {
+      if (krediHatasi.message === 'YETERSIZ_KREDI') {
+        return res.status(402).json({
+          hata: 'Yetersiz kredi.',
+          kod: 'YETERSIZ_KREDI',
+          kalanKredi: krediHatasi.kalanKredi,
+        });
+      }
+      throw krediHatasi;
+    }
 
     const arastirmaModeli = genAI.getGenerativeModel({
       model: 'gemini-2.5-flash',
@@ -777,7 +1052,9 @@ Max 5 kaynak. Güvenilir ve öğrenci için faydalı kaynaklar seç (Wikipedia, 
 
     try {
       const veri = JSON.parse(text);
-      res.json({ ...veri, konu });
+      const sonucVeri = { ...veri, konu };
+      _arastirmaOnbellek.set(onbellekAnahtari, { veri: sonucVeri, zaman: simdi });
+      res.json(sonucVeri);
     } catch {
       res.json({ konu, ozet: text.substring(0, 400), kaynaklar: [], sorular: [] });
     }
@@ -790,7 +1067,7 @@ Max 5 kaynak. Güvenilir ve öğrenci için faydalı kaynaklar seç (Wikipedia, 
 // ---------------------------------------------------------
 // SAYFA ANALİZ ENDPOINT - gerçek sayfa metnini okuyarak cevaplar
 // ---------------------------------------------------------
-app.post('/sayfa-analiz', async (req, res) => {
+app.post('/sayfa-analiz', aiIstekSiniri, kimlikDogrula, krediGerekli(15), async (req, res) => {
   try {
     const { url, baslik, sayfaMetni, soru } = req.body;
     
