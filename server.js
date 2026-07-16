@@ -507,8 +507,10 @@ let _gundemOnbellek = { veri: null, zaman: 0 };
 const GUNDEM_ONBELLEK_SURESI = 60 * 60 * 1000; // 1 saat (ms)
 
 // Bir URL'nin GERÇEK sayfa başlığını (<title> veya og:title) çeker.
-// Bu, modelin başlık uydurmasını tamamen ortadan kaldırır — başlık
-// doğrudan o sayfanın kendisinden geliyor, hata payı yok.
+// Ayrıca bunun bir KATEGORİ/ANA SAYFA mı yoksa SPESİFİK BİR MAKALE mi
+// olduğunu da tespit eder — kategori sayfalarının başlığı genelde
+// "X haberleri sayfası" gibi genel bir tanıtım cümlesi olur, gerçek
+// haber başlığı değil.
 async function sayfaBasligiCek(url) {
   try {
     const controller = new AbortController();
@@ -522,14 +524,33 @@ async function sayfaBasligiCek(url) {
     if (!yanit.ok) return null;
 
     const html = await yanit.text();
-    // Önce og:title dene — genelde daha temiz, site adı eklenmemiş olur
+
+    let baslik = null;
     const ogEslesme = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i);
-    if (ogEslesme && ogEslesme[1].trim()) return ogEslesme[1].trim();
+    if (ogEslesme && ogEslesme[1].trim()) baslik = ogEslesme[1].trim();
+    if (!baslik) {
+      const titleEslesme = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+      if (titleEslesme && titleEslesme[1].trim()) baslik = titleEslesme[1].trim();
+    }
+    if (!baslik) return null;
 
-    const titleEslesme = html.match(/<title[^>]*>([^<]+)<\/title>/i);
-    if (titleEslesme && titleEslesme[1].trim()) return titleEslesme[1].trim();
+    // og:type "article" ise kesin bir makale demektir — güçlü sinyal
+    const tipEslesme = html.match(/<meta[^>]+property=["']og:type["'][^>]+content=["']([^"']+)["']/i);
+    const ogTipi = tipEslesme ? tipEslesme[1].trim().toLowerCase() : null;
 
-    return null;
+    // URL yol derinliği — kategori sayfaları genelde kısa (örn. /biology),
+    // makaleler genelde uzun ve spesifik (örn. /2024/01/makale-basligi-xyz)
+    let yolDerinligi = 0;
+    try {
+      const cozulenUrl = new URL(yanit.url || url);
+      yolDerinligi = cozulenUrl.pathname.split('/').filter(Boolean).length;
+    } catch {}
+
+    // Makale gibi mi? og:type açıkça "website" DEĞİLSE ve yol yeterince
+    // derinse (kategori sayfası olma ihtimali düşükse) güvenilir kabul et
+    const kategoriSayfasiGibi = ogTipi === 'website' || yolDerinligi < 2;
+
+    return { baslik, makaleGibi: !kategoriSayfasiGibi };
   } catch {
     return null; // zaman aşımı, engellendi, vs. — sorun değil, yedek yönteme düşer
   }
@@ -597,14 +618,21 @@ app.get('/gundem', async (req, res) => {
     });
     const tumSecilenler = kaynaklar.slice(0, 12);
 
-    // Her kaynağın GERÇEK sayfa başlığını paralel olarak çek
+    // Her kaynağın GERÇEK sayfa başlığını paralel olarak çek — artık
+    // {baslik, makaleGibi} objesi dönüyor, makaleGibi=false ise bu bir
+    // kategori/ana sayfa demektir, güvenilmez
     await Promise.all(tumSecilenler.map(async (k) => {
-      k.gercekBaslik = await sayfaBasligiCek(k.url);
+      const sonuc = await sayfaBasligiCek(k.url);
+      if (sonuc && sonuc.makaleGibi) {
+        k.gercekBaslik = sonuc.baslik;
+      }
+      // makaleGibi false ise gercekBaslik ATANMAZ — kategori sayfası
+      // başlığı ("X haberleri sayfası" gibi) hiç kullanılmasın diye
     }));
 
-    // ELEME: Ne gerçek başlığı ne de anlamlı bir doğrulanmış metni olan
-    // kaynakları listeye HİÇ almıyoruz. Az ama doğru haber, çok ama
-    // hatalı/genel ("Biology" gibi) haberden iyidir.
+    // ELEME: Ne gerçek (makale) başlığı ne de anlamlı bir doğrulanmış
+    // metni olan kaynakları listeye HİÇ almıyoruz. Az ama doğru haber,
+    // çok ama hatalı/genel ("Biology" gibi) haberden iyidir.
     const secilenKaynaklar = tumSecilenler
       .filter((k) => (k.gercekBaslik && k.gercekBaslik.length > 8) || (k.baglam && k.baglam.length > 25))
       .slice(0, 8);
