@@ -526,51 +526,71 @@ app.get('/gundem', async (req, res) => {
       tools: [{ googleSearch: {} }],
     });
 
-    // 1. ADIM: Gerçekten arama yaptır — hem serbest metni (modelin ne
-    // bulduğunu anlattığı kısım) hem de gerçek kaynakları (grounding
-    // metadata) alıyoruz. web.title çoğu zaman sadece site adı oluyor
-    // (örn. "Nature"), gerçek başlık değil — o yüzden asıl başlığı
-    // serbest metinden çıkaracağız.
-    const aramaPrompt = `Search the web for 10 current, interesting news items and articles from this week about general science, discovery, space, biology, physics, history, philosophy, technology, or psychology. Mix different topics — don't focus on just one. For each one, briefly note the SPECIFIC headline/topic you found (not just the publication name).`;
+    // 1. ADIM: Gerçekten arama yaptır — hem serbest metni hem de gerçek
+    // kaynakları (grounding metadata) alıyoruz.
+    const aramaPrompt = `Search the web for 10 current, interesting news items and articles from this week about general science, discovery, space, biology, physics, history, philosophy, technology, or psychology. Mix different topics — don't focus on just one. For each one, write a clear sentence describing the SPECIFIC headline/topic you found (not just the publication name).`;
 
     const result = await gundemModeli.generateContent(aramaPrompt);
-    const aramaMetni = result.response.text();
     const grounding = result.response.candidates?.[0]?.groundingMetadata;
     const chunks = grounding?.groundingChunks || [];
+    const destekler = grounding?.groundingSupports || [];
 
-    // Gerçek arama kaynaklarından (grounding) tekilleştirilmiş liste çıkar
-    // — burada web.title genelde sadece site adı, gerçek başlık DEĞİL
+    // KRİTİK ADIM: groundingSupports, modelin yazdığı her cümleyi o cümleyi
+    // GERÇEKTEN destekleyen kaynak indeksine bağlar. Bu sayede "hangi cümle
+    // hangi URL'ye ait" sorusu tahmine değil, API'nin kendi verisine dayanır
+    // — önceki index-sırasına-güvenme yönteminin yanlış eşleştirme sorununu çözer.
+    const chunkIndeksineGoreMetinler = {};
+    for (const destek of destekler) {
+      const metin = destek.segment?.text;
+      const indeksler = destek.groundingChunkIndices || [];
+      if (!metin) continue;
+      for (const idx of indeksler) {
+        if (!chunkIndeksineGoreMetinler[idx]) chunkIndeksineGoreMetinler[idx] = [];
+        chunkIndeksineGoreMetinler[idx].push(metin);
+      }
+    }
+
+    // Gerçek arama kaynaklarından (grounding) tekilleştirilmiş liste çıkar,
+    // her birine KENDİ gerçek bağlam metnini ekle
     const gorulenUrller = new Set();
     const kaynaklar = [];
-    for (const c of chunks) {
+    chunks.forEach((c, idx) => {
       const web = c.web;
-      if (!web || !web.uri) continue;
-      if (gorulenUrller.has(web.uri)) continue;
+      if (!web || !web.uri) return;
+      if (gorulenUrller.has(web.uri)) return;
       gorulenUrller.add(web.uri);
-      kaynaklar.push({ siteAdi: (web.title || 'Web').trim(), url: web.uri });
-      if (kaynaklar.length >= 10) break;
-    }
+      const baglamCumleleri = chunkIndeksineGoreMetinler[idx] || [];
+      kaynaklar.push({
+        siteAdi: (web.title || 'Web').trim(),
+        url: web.uri,
+        baglam: baglamCumleleri.join(' ').trim(),
+      });
+    });
+    const secilenKaynaklar = kaynaklar.slice(0, 10);
 
     let haberler = [];
 
-    if (kaynaklar.length > 0) {
-      // 2. ADIM: Serbest arama metnini (gerçek başlıkların geçtiği yer)
-      // ve kaynak listesini birlikte vererek, HER kaynak için doğru
-      // GERÇEK başlığı + kategori + özet üretmesini istiyoruz.
-      const kaynakListesi = kaynaklar.map((k, i) => `${i + 1}. Source: ${k.siteAdi} (${k.url})`).join('\n');
-      const etiketPrompt = `You searched the web and found these sources:
+    if (secilenKaynaklar.length > 0) {
+      // 2. ADIM: Her kaynak için, SADECE o kaynağa ait doğrulanmış bağlam
+      // metnini vererek başlık + kategori + özet ürettiriyoruz. Farklı
+      // kaynakların içerikleri birbirine karışamaz çünkü her biri kendi
+      // doğrulanmış metniyle sınırlı.
+      const kaynakListesi = secilenKaynaklar.map((k, i) => {
+        const baglamSatiri = k.baglam
+          ? `Verified content about this exact source: "${k.baglam}"`
+          : `(No specific verified content found — publication name only: ${k.siteAdi})`;
+        return `${i + 1}. Source: ${k.siteAdi}\n   ${baglamSatiri}`;
+      }).join('\n\n');
+
+      const etiketPrompt = `Here are sources found via web search, each with its own VERIFIED content (do not mix content between sources):
+
 ${kaynakListesi}
 
-Here are your own notes from that search, describing what you actually found:
-"""
-${aramaMetni}
-"""
-
-For EACH numbered source above, in the SAME order, extract the SPECIFIC news headline/topic (not just the publication name) that corresponds to it, based on your notes. Respond with a JSON array in ${appDili} using this exact format:
+For EACH numbered source above, using ONLY that source's own verified content, respond with a JSON array in ${appDili} using this exact format:
 [
-  {"baslik": "the specific headline/topic in ${appDili}, NOT just the source name", "kategori": "one English word: Physics, Biology, Space, History, Philosophy, Technology, Psychology, or Chemistry", "kaynak": "publication name", "ozet": "1 short sentence in ${appDili} summarizing the article"}
+  {"baslik": "the specific headline/topic in ${appDili}, based ONLY on that source's verified content, NOT just the source name", "kategori": "one English word: Physics, Biology, Space, History, Philosophy, Technology, Psychology, or Chemistry", "kaynak": "publication name", "ozet": "1 short sentence in ${appDili} summarizing that source's verified content"}
 ]
-Return exactly ${kaynaklar.length} items, matching the order above. If your notes don't mention a specific topic for a source, make a reasonable short topic guess from context — never just repeat the publication name as the headline.`;
+Return exactly ${secilenKaynaklar.length} items, matching the order above. If a source has no verified content, make a brief reasonable guess from the publication name/context, but never copy another source's topic.`;
 
       const etiketModeli = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
       const etiketSonuc = await etiketModeli.generateContent(etiketPrompt);
@@ -579,7 +599,7 @@ Return exactly ${kaynaklar.length} items, matching the order above. If your note
       let etiketler = [];
       try { etiketler = JSON.parse(etiketText); } catch { etiketler = []; }
 
-      haberler = kaynaklar.map((k, i) => ({
+      haberler = secilenKaynaklar.map((k, i) => ({
         baslik: etiketler[i]?.baslik || k.siteAdi,
         url: k.url,
         kategori: etiketler[i]?.kategori || 'Science',
