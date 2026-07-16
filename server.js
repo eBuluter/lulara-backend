@@ -595,13 +595,19 @@ app.get('/gundem', async (req, res) => {
         baglam: baglamCumleleri.join(' ').trim(),
       });
     });
-    const secilenKaynaklar = kaynaklar.slice(0, 10);
+    const tumSecilenler = kaynaklar.slice(0, 12);
 
-    // Her kaynağın GERÇEK sayfa başlığını paralel olarak çek — bu artık
-    // modelin tahminine değil, doğrudan o sayfanın kendi HTML'ine dayanıyor
-    await Promise.all(secilenKaynaklar.map(async (k) => {
+    // Her kaynağın GERÇEK sayfa başlığını paralel olarak çek
+    await Promise.all(tumSecilenler.map(async (k) => {
       k.gercekBaslik = await sayfaBasligiCek(k.url);
     }));
+
+    // ELEME: Ne gerçek başlığı ne de anlamlı bir doğrulanmış metni olan
+    // kaynakları listeye HİÇ almıyoruz. Az ama doğru haber, çok ama
+    // hatalı/genel ("Biology" gibi) haberden iyidir.
+    const secilenKaynaklar = tumSecilenler
+      .filter((k) => (k.gercekBaslik && k.gercekBaslik.length > 8) || (k.baglam && k.baglam.length > 25))
+      .slice(0, 8);
 
     let haberler = [];
 
@@ -612,11 +618,9 @@ app.get('/gundem', async (req, res) => {
       const kaynakListesi = secilenKaynaklar.map((k, i) => {
         let kaynakBilgisi;
         if (k.gercekBaslik) {
-          kaynakBilgisi = `REAL page title (use this exact topic, just translate/adapt into ${appDili}): "${k.gercekBaslik}"`;
-        } else if (k.baglam) {
-          kaynakBilgisi = `Verified content about this exact source: "${k.baglam}"`;
+          kaynakBilgisi = `REAL page title (translate ONLY this into ${appDili}, word-for-word meaning, do NOT summarize into a category): "${k.gercekBaslik}"`;
         } else {
-          kaynakBilgisi = `(No specific verified content found — publication name only: ${k.siteAdi})`;
+          kaynakBilgisi = `Verified content about this exact source: "${k.baglam}"`;
         }
         return `${i + 1}. Source: ${k.siteAdi}\n   ${kaynakBilgisi}`;
       }).join('\n\n');
@@ -627,9 +631,9 @@ ${kaynakListesi}
 
 For EACH numbered source above, using ONLY that source's own information, respond with a JSON array in ${appDili} using this exact format:
 [
-  {"baslik": "if a REAL page title was given, translate/adapt ONLY that into ${appDili} (keep it accurate, don't change the topic); otherwise infer a specific headline from the verified content, in ${appDili}", "kategori": "one English word: Physics, Biology, Space, History, Philosophy, Technology, Psychology, or Chemistry", "kaynak": "publication name", "ozet": "1 short sentence in ${appDili} summarizing that source's information"}
+  {"baslik": "a specific, complete headline sentence in ${appDili} — at least 5 words, describing the actual news topic. NEVER just a category word like 'Biology' or 'Physics News' or 'Science'.", "kategori": "one English word: Physics, Biology, Space, History, Philosophy, Technology, Psychology, or Chemistry", "kaynak": "publication name", "ozet": "1 short sentence in ${appDili} summarizing that source's information"}
 ]
-Return exactly ${secilenKaynaklar.length} items, matching the order above. Never copy another source's topic into this one.`;
+Return exactly ${secilenKaynaklar.length} items, matching the order above. Never copy another source's topic into this one. The "baslik" field is a NEWS HEADLINE, never a single category word.`;
 
       const etiketModeli = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
       const etiketSonuc = await etiketModeli.generateContent(etiketPrompt);
@@ -638,13 +642,30 @@ Return exactly ${secilenKaynaklar.length} items, matching the order above. Never
       let etiketler = [];
       try { etiketler = JSON.parse(etiketText); } catch { etiketler = []; }
 
-      haberler = secilenKaynaklar.map((k, i) => ({
-        baslik: etiketler[i]?.baslik || k.gercekBaslik || k.siteAdi,
-        url: k.url,
-        kategori: etiketler[i]?.kategori || 'Science',
-        kaynak: etiketler[i]?.kaynak || k.siteAdi,
-        ozet: etiketler[i]?.ozet || '',
-      }));
+      // GÜVENLİK AĞI: Model yine de kısa/genel bir başlık üretirse
+      // (tek kelime, ör. "Biology"), gerçek sayfa başlığına geri düş
+      const genelKelimeler = ['biology', 'physics', 'science', 'space', 'history',
+        'philosophy', 'technology', 'psychology', 'chemistry', 'news', 'biyoloji',
+        'fizik', 'bilim', 'uzay', 'tarih', 'felsefe', 'teknoloji', 'psikoloji', 'kimya'];
+
+      haberler = secilenKaynaklar.map((k, i) => {
+        let baslik = (etiketler[i]?.baslik || '').trim();
+        const kelimeSayisi = baslik.split(/\s+/).filter(Boolean).length;
+        const cokKisaVeyaGenel = kelimeSayisi < 4 || genelKelimeler.includes(baslik.toLowerCase());
+        if (cokKisaVeyaGenel && k.gercekBaslik) {
+          baslik = k.gercekBaslik; // gerçek başlığa geri düş (çevrilmemiş ama doğru)
+        } else if (!baslik) {
+          baslik = k.gercekBaslik || k.siteAdi;
+        }
+
+        return {
+          baslik,
+          url: k.url,
+          kategori: etiketler[i]?.kategori || 'Science',
+          kaynak: etiketler[i]?.kaynak || k.siteAdi,
+          ozet: etiketler[i]?.ozet || '',
+        };
+      });
     }
 
     // Grounding boş döndüyse (nadir), eski yönteme geri düş — hiç veri
