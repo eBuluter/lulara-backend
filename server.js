@@ -108,7 +108,7 @@ function varsayilanKrediVerisi() {
     kredi: UCRETSIZ_MAKS_KREDI,
     sonYenilenmeZamani: Date.now(),
     premium: false,
-    streakFreezeHakki: 0,
+    streakFreezeHakki: 1, // yeni kullanıcıya küçük bir başlangıç hediyesi
   };
 }
 
@@ -180,6 +180,40 @@ app.get('/kredi-durumu', kimlikDogrula, async (req, res) => {
   } catch (hata) {
     console.error('Kredi durumu hatası:', hata);
     res.status(500).json({ hata: 'Kredi durumu alınamadı.' });
+  }
+});
+
+// ---------------------------------------------------------
+// STREAK FREEZE — kullanıcı bir günü kaçırdığında serisini
+// korumak için hakkını kullanır. Flutter tarafı, seri kopacağını
+// tespit ettiğinde bu endpoint'i çağırır; hak varsa düşülür ve
+// seri korunur, yoksa normal şekilde sıfırlanır.
+// ---------------------------------------------------------
+app.post('/streak-freeze-kullan', kimlikDogrula, async (req, res) => {
+  try {
+    const ref = db.collection('kullanicilar').doc(req.uid);
+    let basariliMi = false;
+    let kalanHak = 0;
+
+    await db.runTransaction(async (t) => {
+      const dok = await t.get(ref);
+      let veri = dok.exists ? dok.data() : varsayilanKrediVerisi();
+      const mevcutHak = veri.streakFreezeHakki || 0;
+
+      if (mevcutHak > 0) {
+        veri.streakFreezeHakki = mevcutHak - 1;
+        t.set(ref, veri, { merge: true });
+        basariliMi = true;
+        kalanHak = veri.streakFreezeHakki;
+      } else {
+        kalanHak = 0;
+      }
+    });
+
+    res.json({ basarili: basariliMi, kalanHak });
+  } catch (hata) {
+    console.error('Streak freeze hatası:', hata);
+    res.status(500).json({ basarili: false, hata: 'Streak freeze kullanılamadı.' });
   }
 });
 
