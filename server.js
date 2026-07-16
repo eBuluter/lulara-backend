@@ -162,12 +162,20 @@ app.get('/kredi-durumu', kimlikDogrula, async (req, res) => {
     veri = krediYenile(veri);
     await ref.set(veri, { merge: true });
 
+    // Bugün için kalan reklam hakkı — gün değiştiyse tam hak var demektir
+    const bugun = new Date();
+    const bugunStr = `${bugun.getFullYear()}-${bugun.getMonth() + 1}-${bugun.getDate()}`;
+    const bugunkuReklamSayisi = veri.reklamOduluGunu === bugunStr ? (veri.reklamOduluSayisi || 0) : 0;
+    const kalanReklamHakki = Math.max(0, REKLAM_GUNLUK_LIMIT - bugunkuReklamSayisi);
+
     const maksKredi = veri.premium ? PREMIUM_MAKS_KREDI : UCRETSIZ_MAKS_KREDI;
     res.json({
       kredi: veri.kredi,
       maksKredi,
       premium: veri.premium || false,
       streakFreezeHakki: veri.streakFreezeHakki || 0,
+      kalanReklamHakki,
+      reklamGunlukLimit: REKLAM_GUNLUK_LIMIT,
     });
   } catch (hata) {
     console.error('Kredi durumu hatası:', hata);
@@ -185,6 +193,7 @@ app.get('/kredi-durumu', kimlikDogrula, async (req, res) => {
 // ---------------------------------------------------------
 const ADMOB_ANAHTAR_ADRESI = 'https://www.gstatic.com/admob/reward/verifier-keys.json';
 const REKLAM_ODUL_MIKTARI = 100;
+const REKLAM_GUNLUK_LIMIT = 5; // kullanıcı başına günde en fazla 5 reklam ödülü
 
 let _admobAnahtarlari = null;
 let _admobAnahtarSonCekilme = 0;
@@ -264,16 +273,41 @@ app.get('/reklam-ssv-callback', async (req, res) => {
       return res.status(200).send('OK'); // zaten işlendi, Google'a yine de 200 dön
     }
 
-    // Krediyi ekle — kapasiteyi aşabilir, bu normal (kazanılmış bonus)
+    // Bugünün tarihi — günlük reklam sayacını sıfırlamak için
+    const bugun = new Date();
+    const bugunStr = `${bugun.getFullYear()}-${bugun.getMonth() + 1}-${bugun.getDate()}`;
+
+    // Krediyi ekle — kapasiteyi aşabilir, bu normal (kazanılmış bonus).
+    // GÜNLÜK LİMİT: kullanıcı başına günde en fazla REKLAM_GUNLUK_LIMIT
+    // reklam ödülü — hem kötüye kullanımı önler hem Premium'un değerini korur.
     const kullaniciRef = db.collection('kullanicilar').doc(String(user_id));
+    let limitAsildiMi = false;
     await db.runTransaction(async (t) => {
       const dok = await t.get(kullaniciRef);
       let veri = dok.exists ? dok.data() : varsayilanKrediVerisi();
       veri = krediYenile(veri);
+
+      // Gün değiştiyse sayaç sıfırlanır
+      if (veri.reklamOduluGunu !== bugunStr) {
+        veri.reklamOduluGunu = bugunStr;
+        veri.reklamOduluSayisi = 0;
+      }
+
+      if ((veri.reklamOduluSayisi || 0) >= REKLAM_GUNLUK_LIMIT) {
+        limitAsildiMi = true;
+        t.set(kullaniciRef, veri, { merge: true }); // gün/sayaç güncellemesini yine de kaydet
+        return; // kredi VERİLMEZ
+      }
+
       veri.kredi = (veri.kredi || 0) + REKLAM_ODUL_MIKTARI;
+      veri.reklamOduluSayisi = (veri.reklamOduluSayisi || 0) + 1;
       t.set(kullaniciRef, veri, { merge: true });
       t.set(islemRef, { zaman: Date.now(), userId: String(user_id) });
     });
+
+    if (limitAsildiMi) {
+      console.log(`Kullanıcı ${user_id} günlük reklam limitine ulaştı, kredi verilmedi`);
+    }
 
     res.status(200).send('OK');
   } catch (hata) {
