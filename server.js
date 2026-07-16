@@ -179,6 +179,46 @@ function krediGerekli(miktar) {
   };
 }
 
+// ---------------------------------------------------------
+// GİRDİ UZUNLUĞU SINIRLARI — sabit kredi fiyatlandırması (örn. sohbet
+// mesajı = 10 kredi), gönderilen metnin BOYUTUNU hesaba katmıyor. Biri
+// tek bir mesaja on binlerce karakter yapıştırıp gerçek Gemini maliyetini
+// şişirebilir ama yine de sadece 10 kredi öder. Bu middleware'ler, kredi
+// düşülmeden ÖNCE makul olmayan büyüklükteki girdileri reddeder.
+// ---------------------------------------------------------
+const MAKS_MESAJ_UZUNLUGU = 6000; // sohbette tek bir mesaj için
+const MAKS_KONU_UZUNLUGU = 300;   // quiz/kart/research konu başlığı için
+const MAKS_SORU_UZUNLUGU = 2000;  // sayfa analizi / quiz değerlendirme sorusu için
+
+// Sohbet endpoint'leri için: mesajlar dizisindeki her mesajın metnini kontrol eder
+function sohbetUzunlugunuKontrolEt(req, res, next) {
+  const { mesajlar } = req.body;
+  if (!mesajlar || !Array.isArray(mesajlar)) return next(); // asıl doğrulama route içinde zaten var
+  for (const m of mesajlar) {
+    if (m.metin && m.metin.length > MAKS_MESAJ_UZUNLUGU) {
+      return res.status(400).json({
+        hata: `Message too long (max ${MAKS_MESAJ_UZUNLUGU} characters).`,
+        kod: 'MESAJ_COK_UZUN',
+      });
+    }
+  }
+  next();
+}
+
+// Tek bir metin alanını (konu, soru, vb.) kontrol eden genel middleware
+function alanUzunlugunuSinirla(alanAdi, maksUzunluk) {
+  return (req, res, next) => {
+    const deger = req.body?.[alanAdi];
+    if (typeof deger === 'string' && deger.length > maksUzunluk) {
+      return res.status(400).json({
+        hata: `${alanAdi} too long (max ${maksUzunluk} characters).`,
+        kod: 'GIRDI_COK_UZUN',
+      });
+    }
+    next();
+  };
+}
+
 // Kullanıcının güncel kredi durumunu döner (yeniler ama düşmez)
 app.get('/kredi-durumu', kimlikDogrula, async (req, res) => {
   try {
@@ -489,7 +529,7 @@ const MAKS_GECMIS_MESAJ = 16;
 // ---------------------------------------------------------
 // STREAMING ENDPOINT - kelime kelime akıcı cevap
 // ---------------------------------------------------------
-app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, krediGerekli(10), async (req, res) => {
+app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, krediGerekli(10), async (req, res) => {
   try {
     const { mesajlar, dil } = req.body;
 
@@ -590,7 +630,7 @@ If the student writes in ${appDili} (matching the app language), respond normall
 // ---------------------------------------------------------
 // ANA ENDPOINT - Flutter uygulaması buraya soru gönderecek
 // ---------------------------------------------------------
-app.post('/sohbet', aiIstekSiniri, kimlikDogrula, krediGerekli(10), async (req, res) => {
+app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, krediGerekli(10), async (req, res) => {
   try {
     const { mesajlar, dil } = req.body;
 
@@ -783,7 +823,7 @@ function _gorselEtiketiniAyikla(metin) {
 // ---------------------------------------------------------
 // QUIZ ENDPOINT - verilen konuda çoktan seçmeli veya açık uçlu soru üretir
 // ---------------------------------------------------------
-app.post('/quiz', aiIstekSiniri, kimlikDogrula, krediGerekli(15), async (req, res) => {
+app.post('/quiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(15), async (req, res) => {
   try {
     const { konu, zorluk = 'orta', kacinilacakSorular = [] } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
@@ -818,7 +858,7 @@ Her soruda sadece bir doğru cevap olsun. Aciklama 1-2 cümle olsun.`;
 // ---------------------------------------------------------
 // QUIZ DEĞERLENDİRME ENDPOINT - açık uçlu sorularda öğrencinin cevabını değerlendirir
 // ---------------------------------------------------------
-app.post('/quiz-degerlendir', aiIstekSiniri, kimlikDogrula, krediGerekli(5), async (req, res) => {
+app.post('/quiz-degerlendir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('kullaniciCevabi', MAKS_SORU_UZUNLUGU), krediGerekli(5), async (req, res) => {
   try {
     const { soru, dogruCevap, kullaniciCevabi } = req.body;
 
@@ -849,7 +889,7 @@ SADECE JSON formatında yanıt ver:
 // ---------------------------------------------------------
 // KART OLUŞTURMA ENDPOINT - verilen konuda flashcard üretir
 // ---------------------------------------------------------
-app.post('/kartlar-olustur', aiIstekSiniri, kimlikDogrula, krediGerekli(15), async (req, res) => {
+app.post('/kartlar-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(15), async (req, res) => {
   try {
     const { konu } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
@@ -1113,7 +1153,7 @@ Keep titles short (under 12 words).`;
 const _arastirmaOnbellek = new Map(); // anahtar: "dil:konu" -> {veri, zaman}
 const ARASTIRMA_ONBELLEK_SURESI = 60 * 60 * 1000; // 1 saat
 
-app.post('/arastir', aiIstekSiniri, kimlikDogrula, async (req, res) => {
+app.post('/arastir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), async (req, res) => {
   try {
     const { konu, dil } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
@@ -1178,7 +1218,7 @@ Max 5 kaynak. Güvenilir ve öğrenci için faydalı kaynaklar seç (Wikipedia, 
 // ---------------------------------------------------------
 // SAYFA ANALİZ ENDPOINT - gerçek sayfa metnini okuyarak cevaplar
 // ---------------------------------------------------------
-app.post('/sayfa-analiz', aiIstekSiniri, kimlikDogrula, krediGerekli(15), async (req, res) => {
+app.post('/sayfa-analiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('soru', MAKS_SORU_UZUNLUGU), krediGerekli(15), async (req, res) => {
   try {
     const { url, baslik, sayfaMetni, soru } = req.body;
     
