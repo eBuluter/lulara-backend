@@ -117,6 +117,19 @@ const model = genAI.getGenerativeModel({
   systemInstruction: SISTEM_PROMPTU,
 });
 
+// Basit/yapısal işler için (quiz değerlendirme, kategorileme) daha ucuz
+// ve daha yeni nesil model — asıl sohbet kalitesini etkilemez, sadece
+// arka plandaki küçük işleri ucuzlatır. Ana sohbet modeline (yukarıdaki
+// 'model') şimdilik dokunmuyoruz.
+const ucuzModel = genAI.getGenerativeModel({
+  model: 'gemini-3.1-flash-lite',
+});
+
+// Sohbete gönderilen geçmiş mesaj sayısını sınırlıyoruz — uzun sohbetlerde
+// input token'lar sınırsız büyümesin diye. Son 16 mesaj (~8 karşılıklı
+// konuşma) genelde bağlamı korumak için yeterli, maliyeti düşürür.
+const MAKS_GECMIS_MESAJ = 16;
+
 // ---------------------------------------------------------
 // STREAMING ENDPOINT - kelime kelime akıcı cevap
 // ---------------------------------------------------------
@@ -147,7 +160,12 @@ If the student writes in ${appDili} (matching the app language), respond normall
       return res.status(400).json({ hata: 'Mesaj listesi gerekli.' });
     }
 
-    const mesajlarKarsilamaHaric = mesajlar.slice(1);
+    // Karşılama mesajını çıkar, sonra en fazla MAKS_GECMIS_MESAJ kadarını
+    // tut — çok uzun sohbetlerde input token maliyetini sınırlar
+    let mesajlarKarsilamaHaric = mesajlar.slice(1);
+    if (mesajlarKarsilamaHaric.length > MAKS_GECMIS_MESAJ) {
+      mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(-MAKS_GECMIS_MESAJ);
+    }
     const geminiGecmisi = mesajlarKarsilamaHaric.slice(0, -1).map((m) => {
       const parts = [];
       if (m.metin && m.metin.trim()) parts.push({ text: m.metin });
@@ -244,7 +262,12 @@ If the student writes in ${appDili} (matching the app language), respond normall
       return res.status(400).json({ hata: 'Mesaj listesi gerekli.' });
     }
 
-    const mesajlarKarsilamaHaric = mesajlar.slice(1);
+    // Karşılama mesajını çıkar, sonra en fazla MAKS_GECMIS_MESAJ kadarını
+    // tut — çok uzun sohbetlerde input token maliyetini sınırlar
+    let mesajlarKarsilamaHaric = mesajlar.slice(1);
+    if (mesajlarKarsilamaHaric.length > MAKS_GECMIS_MESAJ) {
+      mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(-MAKS_GECMIS_MESAJ);
+    }
 
     // Geçmiş mesajları Gemini formatına çeviriyoruz.
     // Fotoğraf içeren mesajlar için hem metin hem de inlineData (görsel) parts ekliyoruz.
@@ -457,7 +480,7 @@ SADECE JSON formatında yanıt ver:
 
 Öğrenci doğru yönde ama eksik bir cevap verdiyse "dogru": true say ve eksiği tamamla.`;
 
-    const result = await model.generateContent(prompt);
+    const result = await ucuzModel.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
     const degerlendirme = JSON.parse(text);
     res.json(degerlendirme);
@@ -663,7 +686,7 @@ For EACH numbered source above, using ONLY that source's own information, respon
 ]
 Return exactly ${secilenKaynaklar.length} items, matching the order above. Never copy another source's topic into this one. The "baslik" field is a NEWS HEADLINE, never a single category word.`;
 
-      const etiketModeli = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+      const etiketModeli = ucuzModel; // basit çeviri+kategorileme işi, ucuz model yeterli
       const etiketSonuc = await etiketModeli.generateContent(etiketPrompt);
       const etiketText = etiketSonuc.response.text().replace(/```json|```/g, '').trim();
 
