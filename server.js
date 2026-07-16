@@ -506,6 +506,35 @@ Kurallar:
 let _gundemOnbellek = { veri: null, zaman: 0 };
 const GUNDEM_ONBELLEK_SURESI = 60 * 60 * 1000; // 1 saat (ms)
 
+// Bir URL'nin GERÇEK sayfa başlığını (<title> veya og:title) çeker.
+// Bu, modelin başlık uydurmasını tamamen ortadan kaldırır — başlık
+// doğrudan o sayfanın kendisinden geliyor, hata payı yok.
+async function sayfaBasligiCek(url) {
+  try {
+    const controller = new AbortController();
+    const zamanAsimi = setTimeout(() => controller.abort(), 6000);
+    const yanit = await fetch(url, {
+      signal: controller.signal,
+      redirect: 'follow',
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; LularaBot/1.0)' },
+    });
+    clearTimeout(zamanAsimi);
+    if (!yanit.ok) return null;
+
+    const html = await yanit.text();
+    // Önce og:title dene — genelde daha temiz, site adı eklenmemiş olur
+    const ogEslesme = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i);
+    if (ogEslesme && ogEslesme[1].trim()) return ogEslesme[1].trim();
+
+    const titleEslesme = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+    if (titleEslesme && titleEslesme[1].trim()) return titleEslesme[1].trim();
+
+    return null;
+  } catch {
+    return null; // zaman aşımı, engellendi, vs. — sorun değil, yedek yönteme düşer
+  }
+}
+
 app.get('/gundem', async (req, res) => {
   try {
     const dil = req.query.dil || 'en';
@@ -568,29 +597,39 @@ app.get('/gundem', async (req, res) => {
     });
     const secilenKaynaklar = kaynaklar.slice(0, 10);
 
+    // Her kaynağın GERÇEK sayfa başlığını paralel olarak çek — bu artık
+    // modelin tahminine değil, doğrudan o sayfanın kendi HTML'ine dayanıyor
+    await Promise.all(secilenKaynaklar.map(async (k) => {
+      k.gercekBaslik = await sayfaBasligiCek(k.url);
+    }));
+
     let haberler = [];
 
     if (secilenKaynaklar.length > 0) {
-      // 2. ADIM: Her kaynak için, SADECE o kaynağa ait doğrulanmış bağlam
-      // metnini vererek başlık + kategori + özet ürettiriyoruz. Farklı
-      // kaynakların içerikleri birbirine karışamaz çünkü her biri kendi
-      // doğrulanmış metniyle sınırlı.
+      // 2. ADIM: Her kaynak için gerçek başlığı (varsa) veya doğrulanmış
+      // bağlam metnini veriyoruz. Model artık başlık UYDURMUYOR — sadece
+      // gerçek başlığı ${appDili}'ye çeviriyor/uyarluyor ve kategori+özet üretiyor.
       const kaynakListesi = secilenKaynaklar.map((k, i) => {
-        const baglamSatiri = k.baglam
-          ? `Verified content about this exact source: "${k.baglam}"`
-          : `(No specific verified content found — publication name only: ${k.siteAdi})`;
-        return `${i + 1}. Source: ${k.siteAdi}\n   ${baglamSatiri}`;
+        let kaynakBilgisi;
+        if (k.gercekBaslik) {
+          kaynakBilgisi = `REAL page title (use this exact topic, just translate/adapt into ${appDili}): "${k.gercekBaslik}"`;
+        } else if (k.baglam) {
+          kaynakBilgisi = `Verified content about this exact source: "${k.baglam}"`;
+        } else {
+          kaynakBilgisi = `(No specific verified content found — publication name only: ${k.siteAdi})`;
+        }
+        return `${i + 1}. Source: ${k.siteAdi}\n   ${kaynakBilgisi}`;
       }).join('\n\n');
 
-      const etiketPrompt = `Here are sources found via web search, each with its own VERIFIED content (do not mix content between sources):
+      const etiketPrompt = `Here are sources found via web search, each with its own VERIFIED information (do not mix information between sources):
 
 ${kaynakListesi}
 
-For EACH numbered source above, using ONLY that source's own verified content, respond with a JSON array in ${appDili} using this exact format:
+For EACH numbered source above, using ONLY that source's own information, respond with a JSON array in ${appDili} using this exact format:
 [
-  {"baslik": "the specific headline/topic in ${appDili}, based ONLY on that source's verified content, NOT just the source name", "kategori": "one English word: Physics, Biology, Space, History, Philosophy, Technology, Psychology, or Chemistry", "kaynak": "publication name", "ozet": "1 short sentence in ${appDili} summarizing that source's verified content"}
+  {"baslik": "if a REAL page title was given, translate/adapt ONLY that into ${appDili} (keep it accurate, don't change the topic); otherwise infer a specific headline from the verified content, in ${appDili}", "kategori": "one English word: Physics, Biology, Space, History, Philosophy, Technology, Psychology, or Chemistry", "kaynak": "publication name", "ozet": "1 short sentence in ${appDili} summarizing that source's information"}
 ]
-Return exactly ${secilenKaynaklar.length} items, matching the order above. If a source has no verified content, make a brief reasonable guess from the publication name/context, but never copy another source's topic.`;
+Return exactly ${secilenKaynaklar.length} items, matching the order above. Never copy another source's topic into this one.`;
 
       const etiketModeli = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
       const etiketSonuc = await etiketModeli.generateContent(etiketPrompt);
@@ -600,7 +639,7 @@ Return exactly ${secilenKaynaklar.length} items, matching the order above. If a 
       try { etiketler = JSON.parse(etiketText); } catch { etiketler = []; }
 
       haberler = secilenKaynaklar.map((k, i) => ({
-        baslik: etiketler[i]?.baslik || k.siteAdi,
+        baslik: etiketler[i]?.baslik || k.gercekBaslik || k.siteAdi,
         url: k.url,
         kategori: etiketler[i]?.kategori || 'Science',
         kaynak: etiketler[i]?.kaynak || k.siteAdi,
