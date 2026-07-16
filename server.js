@@ -210,10 +210,19 @@ function base64UrlToBuffer(base64url) {
 }
 
 app.get('/reklam-ssv-callback', async (req, res) => {
+  // ÖNEMLİ: AdMob, bu URL'yi kaydederken ve zaman zaman "erişilebilir mi"
+  // diye basit bir yoklama isteği atar — bu istekte gerçek imza parametreleri
+  // OLMAZ. Google, her durumda HTTP 200 bekliyor; eksik/geçersiz veri olması
+  // "hata" değil, sadece "gerçek bir ödül bildirimi değil" demek. Bu yüzden
+  // aşağıdaki tüm "geçersiz" durumlarda bile 200 dönüyoruz, sadece krediyi
+  // vermiyoruz.
   try {
     const tamSorgu = req.url.split('?')[1] || '';
     const imzaBaslangici = tamSorgu.indexOf('&signature=');
-    if (imzaBaslangici === -1) return res.status(400).send('Eksik imza');
+    if (imzaBaslangici === -1) {
+      console.log('SSV yoklaması: imza parametresi yok (muhtemelen AdMob URL testi)');
+      return res.status(200).send('OK');
+    }
 
     // İmzalanan içerik: signature parametresinden ÖNCEKİ her şey
     // (key_id dahil) — Google'ın imzaladığı tam olarak budur
@@ -221,12 +230,16 @@ app.get('/reklam-ssv-callback', async (req, res) => {
 
     const { key_id, signature, user_id, transaction_id } = req.query;
     if (!key_id || !signature || !user_id || !transaction_id) {
-      return res.status(400).send('Eksik parametre');
+      console.log('SSV yoklaması: eksik parametre (muhtemelen AdMob URL testi)');
+      return res.status(200).send('OK');
     }
 
     const anahtarlar = await admobAnahtarlariniGetir();
     const anahtar = anahtarlar.find((k) => String(k.keyId) === String(key_id));
-    if (!anahtar) return res.status(400).send('Bilinmeyen anahtar');
+    if (!anahtar) {
+      console.error('SSV: bilinmeyen key_id —', key_id);
+      return res.status(200).send('OK');
+    }
 
     const publicKey = crypto.createPublicKey(anahtar.pem);
     const dogrulayici = crypto.createVerify('SHA256');
@@ -241,7 +254,7 @@ app.get('/reklam-ssv-callback', async (req, res) => {
 
     if (!gecerliMi) {
       console.error('SSV imza doğrulaması BAŞARISIZ — sahte istek olabilir');
-      return res.status(400).send('Geçersiz imza');
+      return res.status(200).send('OK'); // Google'a yine 200 dön, ama krediyi VERME
     }
 
     // Tekrar (replay) koruması — aynı işlem ID'si iki kez kredi vermesin
@@ -265,7 +278,9 @@ app.get('/reklam-ssv-callback', async (req, res) => {
     res.status(200).send('OK');
   } catch (hata) {
     console.error('SSV callback hatası:', hata);
-    res.status(500).send('Sunucu hatası');
+    // Hata olsa bile Google'a 200 dön — yoksa AdMob callback URL'i
+    // "bozuk" olarak işaretleyip tamamen devre dışı bırakabilir
+    res.status(200).send('OK');
   }
 });
 
