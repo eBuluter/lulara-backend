@@ -978,6 +978,24 @@ Kurallar:
 let _gundemOnbellek = { veri: null, zaman: 0 };
 const GUNDEM_ONBELLEK_SURESI = 60 * 60 * 1000; // 1 saat (ms)
 
+// HTML sayfalarındaki kodlanmış karakterleri (&#x27; &amp;apos; &quot; vb.)
+// gerçek karakterlere çevirir. Bazı sitelerde çift kodlama olabiliyor
+// (örn. &amp;apos; aslında &apos;'in bir kez daha kodlanmış hâli), bu
+// yüzden iki kez uyguluyoruz.
+function htmlVarliklariniCoz(metin) {
+  if (!metin) return metin;
+  const birKezCoz = (m) => m
+    .replace(/&#x([0-9a-f]+);/gi, (_, hex) => String.fromCodePoint(parseInt(hex, 16)))
+    .replace(/&#(\d+);/g, (_, dec) => String.fromCodePoint(parseInt(dec, 10)))
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;|&apos;/g, "'")
+    .replace(/&nbsp;/g, ' ');
+  return birKezCoz(birKezCoz(metin));
+}
+
 // Bir URL'nin GERÇEK sayfa başlığını (<title> veya og:title) çeker.
 // Ayrıca bunun bir KATEGORİ/ANA SAYFA mı yoksa SPESİFİK BİR MAKALE mi
 // olduğunu da tespit eder — kategori sayfalarının başlığı genelde
@@ -1005,6 +1023,9 @@ async function sayfaBasligiCek(url) {
       if (titleEslesme && titleEslesme[1].trim()) baslik = titleEslesme[1].trim();
     }
     if (!baslik) return null;
+
+    // HTML kod-çözme — &#x27; ve benzeri kodlar gerçek karaktere dönüşsün
+    baslik = htmlVarliklariniCoz(baslik);
 
     // og:type "article" ise kesin bir makale demektir — güçlü sinyal
     const tipEslesme = html.match(/<meta[^>]+property=["']og:type["'][^>]+content=["']([^"']+)["']/i);
