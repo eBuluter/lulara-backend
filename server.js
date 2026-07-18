@@ -16,6 +16,7 @@ const { GoogleGenerativeAI } = require('@google/generative-ai'); // Gemini API's
 const rateLimit = require('express-rate-limit'); // tek bir kullanıcının/IP'nin kotayı tüketmesini engeller
 const admin = require('firebase-admin'); // kullanıcı kimliğini doğrulamak ve Firestore'a erişmek için
 const crypto = require('crypto'); // AdMob'un reklam ödülü imzasını doğrulamak için (Node yerleşik)
+const mammoth = require('mammoth'); // Word (.docx) dosyalarından düz metin çıkarmak için
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -191,6 +192,8 @@ const MAKS_KONU_UZUNLUGU = 300;   // quiz/kart/research konu başlığı için
 const MAKS_SORU_UZUNLUGU = 2000;  // sayfa analizi / quiz değerlendirme sorusu için
 
 // Sohbet endpoint'leri için: mesajlar dizisindeki her mesajın metnini kontrol eder
+const MAKS_DOSYA_BASE64_UZUNLUGU = 14 * 1024 * 1024; // ~10MB gerçek dosya boyutu (base64 %33 büyür)
+
 function sohbetUzunlugunuKontrolEt(req, res, next) {
   const { mesajlar } = req.body;
   if (!mesajlar || !Array.isArray(mesajlar)) return next(); // asıl doğrulama route içinde zaten var
@@ -199,6 +202,12 @@ function sohbetUzunlugunuKontrolEt(req, res, next) {
       return res.status(400).json({
         hata: `Message too long (max ${MAKS_MESAJ_UZUNLUGU} characters).`,
         kod: 'MESAJ_COK_UZUN',
+      });
+    }
+    if (m.dosyaBase64 && m.dosyaBase64.length > MAKS_DOSYA_BASE64_UZUNLUGU) {
+      return res.status(400).json({
+        hata: 'Attached file is too large (max ~10MB).',
+        kod: 'DOSYA_COK_BUYUK',
       });
     }
   }
@@ -217,6 +226,38 @@ function alanUzunlugunuSinirla(alanAdi, maksUzunluk) {
     }
     next();
   };
+}
+
+// ---------------------------------------------------------
+// DOSYA EKİ İŞLEME — PDF, Word (.docx) ve düz metin (.txt)
+// dosyalarını Gemini'nin anlayacağı bir "part"a çevirir.
+// PDF: Gemini'ye doğrudan gönderilir, Gemini kendisi okur.
+// .docx: mammoth ile önce düz metne çevrilir (Gemini Word'ü okuyamaz).
+// .txt: base64 çözülüp doğrudan metin olarak eklenir.
+// ---------------------------------------------------------
+const MAKS_BELGE_METNI_UZUNLUGU = 20000; // çıkarılan metin için karakter sınırı
+
+async function dosyaEkiniPartaCevir(mesaj) {
+  if (!mesaj.dosyaBase64 || !mesaj.dosyaTuru) return null;
+  try {
+    if (mesaj.dosyaTuru === 'pdf') {
+      return { inlineData: { mimeType: 'application/pdf', data: mesaj.dosyaBase64 } };
+    }
+    if (mesaj.dosyaTuru === 'txt') {
+      const metin = Buffer.from(mesaj.dosyaBase64, 'base64').toString('utf-8').substring(0, MAKS_BELGE_METNI_UZUNLUGU);
+      return { text: `[Attached file: ${mesaj.dosyaAdi || 'document.txt'}]\n${metin}` };
+    }
+    if (mesaj.dosyaTuru === 'docx') {
+      const buffer = Buffer.from(mesaj.dosyaBase64, 'base64');
+      const sonuc = await mammoth.extractRawText({ buffer });
+      const metin = (sonuc.value || '').substring(0, MAKS_BELGE_METNI_UZUNLUGU);
+      return { text: `[Attached file: ${mesaj.dosyaAdi || 'document.docx'}]\n${metin}` };
+    }
+    return null;
+  } catch (hata) {
+    console.error('Dosya eki işleme hatası:', hata);
+    return { text: `[Could not read the attached file: ${mesaj.dosyaAdi || 'file'}]` };
+  }
 }
 
 // Kullanıcının güncel kredi durumunu döner (yeniler ama düşmez)
@@ -562,14 +603,18 @@ If the student writes in ${appDili} (matching the app language), respond normall
     if (mesajlarKarsilamaHaric.length > MAKS_GECMIS_MESAJ) {
       mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(-MAKS_GECMIS_MESAJ);
     }
-    const geminiGecmisi = mesajlarKarsilamaHaric.slice(0, -1).map((m) => {
+    const gecmisMesajlar = mesajlarKarsilamaHaric.slice(0, -1);
+    const geminiGecmisi = [];
+    for (const m of gecmisMesajlar) {
       const parts = [];
       if (m.metin && m.metin.trim()) parts.push({ text: m.metin });
       if (m.fotografBase64 && m.fotografMimeTipi) {
         parts.push({ inlineData: { mimeType: m.fotografMimeTipi, data: m.fotografBase64 } });
       }
-      return { role: m.kullaniciMi ? 'user' : 'model', parts: parts.length > 0 ? parts : [{ text: '' }] };
-    });
+      const dosyaParcasi = await dosyaEkiniPartaCevir(m);
+      if (dosyaParcasi) parts.push(dosyaParcasi);
+      geminiGecmisi.push({ role: m.kullaniciMi ? 'user' : 'model', parts: parts.length > 0 ? parts : [{ text: '' }] });
+    }
 
     const sonMesajVerisi = mesajlarKarsilamaHaric[mesajlarKarsilamaHaric.length - 1];
     const sonMesajParts = [];
@@ -579,6 +624,8 @@ If the student writes in ${appDili} (matching the app language), respond normall
     if (sonMesajVerisi.fotografBase64 && sonMesajVerisi.fotografMimeTipi) {
       sonMesajParts.push({ inlineData: { mimeType: sonMesajVerisi.fotografMimeTipi, data: sonMesajVerisi.fotografBase64 } });
     }
+    const sonMesajDosyaParcasi = await dosyaEkiniPartaCevir(sonMesajVerisi);
+    if (sonMesajDosyaParcasi) sonMesajParts.push(sonMesajDosyaParcasi);
     if (sonMesajParts.length === 0) sonMesajParts.push({ text: 'Bu görseli incele.' });
 
     // SSE header'ları
@@ -666,17 +713,21 @@ If the student writes in ${appDili} (matching the app language), respond normall
     }
 
     // Geçmiş mesajları Gemini formatına çeviriyoruz.
-    // Fotoğraf içeren mesajlar için hem metin hem de inlineData (görsel) parts ekliyoruz.
-    const geminiGecmisi = mesajlarKarsilamaHaric.slice(0, -1).map((m) => {
+    // Fotoğraf/dosya içeren mesajlar için ilgili parts ekliyoruz.
+    const gecmisMesajlar2 = mesajlarKarsilamaHaric.slice(0, -1);
+    const geminiGecmisi = [];
+    for (const m of gecmisMesajlar2) {
       const parts = [];
       if (m.metin && m.metin.trim()) parts.push({ text: m.metin });
       if (m.fotografBase64 && m.fotografMimeTipi) {
         parts.push({ inlineData: { mimeType: m.fotografMimeTipi, data: m.fotografBase64 } });
       }
-      return { role: m.kullaniciMi ? 'user' : 'model', parts: parts.length > 0 ? parts : [{ text: '' }] };
-    });
+      const dosyaParcasi = await dosyaEkiniPartaCevir(m);
+      if (dosyaParcasi) parts.push(dosyaParcasi);
+      geminiGecmisi.push({ role: m.kullaniciMi ? 'user' : 'model', parts: parts.length > 0 ? parts : [{ text: '' }] });
+    }
 
-    // Son mesaj - metin ve/veya fotoğraf içerebilir
+    // Son mesaj - metin, fotoğraf ve/veya dosya içerebilir
     const sonMesajVerisi = mesajlarKarsilamaHaric[mesajlarKarsilamaHaric.length - 1];
     const sonMesajParts = [];
     if (sonMesajVerisi.metin && sonMesajVerisi.metin.trim()) {
@@ -685,6 +736,8 @@ If the student writes in ${appDili} (matching the app language), respond normall
     if (sonMesajVerisi.fotografBase64 && sonMesajVerisi.fotografMimeTipi) {
       sonMesajParts.push({ inlineData: { mimeType: sonMesajVerisi.fotografMimeTipi, data: sonMesajVerisi.fotografBase64 } });
     }
+    const sonMesajDosyaParcasi2 = await dosyaEkiniPartaCevir(sonMesajVerisi);
+    if (sonMesajDosyaParcasi2) sonMesajParts.push(sonMesajDosyaParcasi2);
     if (sonMesajParts.length === 0) sonMesajParts.push({ text: 'Bu görseli incele.' });
 
     const sohbet = sohbetModeli.startChat({ history: geminiGecmisi });

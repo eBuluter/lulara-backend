@@ -1,2 +1,5 @@
 node_modules/
 .env
+android/key.properties
+*.jks
+*.keystore
