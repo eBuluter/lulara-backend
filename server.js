@@ -17,6 +17,7 @@ const rateLimit = require('express-rate-limit'); // tek bir kullanıcının/IP'n
 const admin = require('firebase-admin'); // kullanıcı kimliğini doğrulamak ve Firestore'a erişmek için
 const crypto = require('crypto'); // AdMob'un reklam ödülü imzasını doğrulamak için (Node yerleşik)
 const mammoth = require('mammoth'); // Word (.docx) dosyalarından düz metin çıkarmak için
+const { GoogleAICacheManager } = require('@google/generative-ai/server'); // acik (explicit) onbellekleme icin
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -24,6 +25,7 @@ const PORT = process.env.PORT || 3000;
 // Gemini API'sine bağlanmak için kullanacağımız "istemci" (client)
 // API key'i .env dosyasından okunuyor, koda asla yazılmıyor
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const cacheManager = new GoogleAICacheManager(process.env.GEMINI_API_KEY);
 
 // ---------------------------------------------------------
 // FIREBASE ADMIN — kullanıcı kimliğini doğrulamak ve kredi
@@ -641,6 +643,80 @@ const ucuzModel = genAI.getGenerativeModel({
   model: 'gemini-3.1-flash-lite',
 });
 
+// ---------------------------------------------------------
+// AÇIK (EXPLICIT) ÖNBELLEKLEME — sistem prompt'u (büyük, sabit kısım)
+// dil başına BİR KEZ Google'ın sunucusuna kaydediliyor, sonraki tüm
+// isteklerde bu önbellek referans gösteriliyor. Bu, otomatik (implicit)
+// önbelleğin trafik zamanlamasına bağlı olma riskini ortadan kaldırıp
+// %90 indirimi GARANTİ hale getiriyor. Öğrenci bazlı bilgiler (zayıf
+// konular) önbelleğe DAHİL EDİLMİYOR — o yüzden hep aynı 5 dil önbelleği
+// (en/de/fr/es/tr) tüm kullanıcılar arasında paylaşılabiliyor.
+// ---------------------------------------------------------
+const DIL_ADLARI_ONBELLEK = { en: 'English', de: 'German', fr: 'French', es: 'Spanish', tr: 'Turkish' };
+const _dilOnbellekleri = {}; // { en: { cache, olusturmaZamani }, ... }
+const ONBELLEK_TTL_SANIYE = 3600; // Google tarafında 1 saat yaşasın
+const ONBELLEK_YENILEME_ESIGI_MS = 50 * 60 * 1000; // 50dk sonra biz de tazeleyelim (güvenli pay)
+
+function dilTalimatiOlustur(appDili) {
+  const desteklenenler = Object.values(DIL_ADLARI_ONBELLEK).join(', ');
+  return `The app's selected language is ${appDili}. You MUST respond in ${appDili} ALWAYS, regardless of what language the student writes in. Do not switch languages based on their input.
+
+If the student writes in a DIFFERENT language than ${appDili}, but that language IS one the app supports (${desteklenenler}), respond ONLY with a short, friendly message in ${appDili} asking them to change the app language in Settings if they want to chat in that language instead. Do not answer their actual question in this case.
+
+If the student writes in a language that is NOT one of the app's supported languages (${desteklenenler}), respond with a short, friendly message in ${appDili} saying that language isn't supported by the app yet, but they're welcome to continue in ${appDili} or switch to one of the supported languages in Settings. Do not answer their actual question in this case.
+
+If the student writes in ${appDili} (matching the app language), respond normally as instructed above.`;
+}
+
+// Verilen dil kodu için geçerli bir önbellek döner — yoksa/eskiyse
+// yeniden oluşturur. Önbellek kurulamazsa null döner (çağıran taraf
+// normal, önbelleksiz systemInstruction'a düşer — uygulama asla bozulmaz).
+async function dilIcinOnbellekGetir(dilKodu) {
+  const appDili = DIL_ADLARI_ONBELLEK[dilKodu] || 'English';
+  const mevcut = _dilOnbellekleri[dilKodu];
+  const simdi = Date.now();
+
+  if (mevcut && (simdi - mevcut.olusturmaZamani) < ONBELLEK_YENILEME_ESIGI_MS) {
+    return mevcut.cache;
+  }
+
+  try {
+    const yeniOnbellek = await cacheManager.create({
+      model: 'models/gemini-3.5-flash',
+      systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimatiOlustur(appDili),
+      ttlSeconds: ONBELLEK_TTL_SANIYE,
+    });
+    _dilOnbellekleri[dilKodu] = { cache: yeniOnbellek, olusturmaZamani: simdi };
+    return yeniOnbellek;
+  } catch (hata) {
+    console.error(`Önbellek oluşturma hatası (${dilKodu}) — önbelleksiz devam edilecek:`, hata.message || hata);
+    return null;
+  }
+}
+
+// Önbellekli ya da (kuramazsa) normal bir sohbet modeli döner.
+// Öğrenci bağlamı (zayıf konular) önbelleğe hiç girmiyor — onu ayrıca
+// çağıran taraf mesaj içeriğine ekleyecek.
+async function sohbetModeliOlustur(dilKodu) {
+  const appDili = DIL_ADLARI_ONBELLEK[dilKodu] || 'English';
+  const onbellek = await dilIcinOnbellekGetir(dilKodu);
+
+  if (onbellek) {
+    return genAI.getGenerativeModel({
+      model: 'gemini-3.5-flash',
+      cachedContent: onbellek,
+      generationConfig: { maxOutputTokens: 2048 },
+    });
+  }
+
+  // Yedek yol — önbellek kurulamadıysa eskisi gibi normal systemInstruction
+  return genAI.getGenerativeModel({
+    model: 'gemini-3.5-flash',
+    systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimatiOlustur(appDili),
+    generationConfig: { maxOutputTokens: 2048 },
+  });
+}
+
 // Sohbete gönderilen geçmiş mesaj sayısını sınırlıyoruz — uzun sohbetlerde
 // input token'lar sınırsız büyümesin diye. Son 16 mesaj (~8 karşılıklı
 // konuşma) genelde bağlamı korumak için yeterli, maliyeti düşürür.
@@ -653,27 +729,9 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
   try {
     const { mesajlar, dil, zayifKonular } = req.body;
 
-    const dilAdlari = {
-      'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish',
-    };
-    const appDili = dilAdlari[dil] || 'English';
-    const desteklenenler = Object.values(dilAdlari).join(', ');
-
-    const dilTalimati = `The app's selected language is ${appDili}. You MUST respond in ${appDili} ALWAYS, regardless of what language the student writes in. Do not switch languages based on their input.
-
-If the student writes in a DIFFERENT language than ${appDili}, but that language IS one the app supports (${desteklenenler}), respond ONLY with a short, friendly message in ${appDili} asking them to change the app language in Settings if they want to chat in that language instead. Do not answer their actual question in this case.
-
-If the student writes in a language that is NOT one of the app's supported languages (${desteklenenler}), respond with a short, friendly message in ${appDili} saying that language isn't supported by the app yet, but they're welcome to continue in ${appDili} or switch to one of the supported languages in Settings. Do not answer their actual question in this case.
-
-If the student writes in ${appDili} (matching the app language), respond normally as instructed above.`;
-
-    const sohbetModeli = genAI.getGenerativeModel({
-      model: 'gemini-3.5-flash',
-      systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimati + ogrenciBaglamiOlustur(zayifKonular),
-      // Nadir "cok uzun cevap" durumlarina karsi guvenlik tavani —
-      // normal cok-adimli aciklamalar bu sinira asla yaklasmaz
-      generationConfig: { maxOutputTokens: 2048 },
-    });
+    // Önbellekli (ya da yedek) sohbet modelini al — dil bazlı, öğrenci
+    // bağlamı dahil değil (o mesaj içeriğine ayrıca eklenecek)
+    const sohbetModeli = await sohbetModeliOlustur(dil);
 
     if (!mesajlar || !Array.isArray(mesajlar)) {
       return res.status(400).json({ hata: 'Mesaj listesi gerekli.' });
@@ -700,6 +758,11 @@ If the student writes in ${appDili} (matching the app language), respond normall
 
     const sonMesajVerisi = mesajlarKarsilamaHaric[mesajlarKarsilamaHaric.length - 1];
     const sonMesajParts = [];
+    // Öğrenci bağlamı (zayıf konular) artık önbelleğe girmiyor — bu yüzden
+    // her isteğin son mesajına küçük bir not olarak ekleniyor. Kısa
+    // olduğu için maliyet etkisi ihmal edilebilir düzeyde.
+    const baglamNotu = ogrenciBaglamiOlustur(zayifKonular);
+    if (baglamNotu) sonMesajParts.push({ text: baglamNotu.trim() });
     if (sonMesajVerisi.metin && sonMesajVerisi.metin.trim()) {
       sonMesajParts.push({ text: sonMesajVerisi.metin });
     }
@@ -772,28 +835,8 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, kre
   try {
     const { mesajlar, dil, zayifKonular } = req.body;
 
-    // Dil talimatını sistem promptuna ekle
-    const dilAdlari = {
-      'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish',
-    };
-    const appDili = dilAdlari[dil] || 'English';
-    const desteklenenler = Object.values(dilAdlari).join(', ');
-
-    const dilTalimati = `The app's selected language is ${appDili}. You MUST respond in ${appDili} ALWAYS, regardless of what language the student writes in. Do not switch languages based on their input.
-
-If the student writes in a DIFFERENT language than ${appDili}, but that language IS one the app supports (${desteklenenler}), respond ONLY with a short, friendly message in ${appDili} asking them to change the app language in Settings if they want to chat in that language instead. Do not answer their actual question in this case.
-
-If the student writes in a language that is NOT one of the app's supported languages (${desteklenenler}), respond with a short, friendly message in ${appDili} saying that language isn't supported by the app yet, but they're welcome to continue in ${appDili} or switch to one of the supported languages in Settings. Do not answer their actual question in this case.
-
-If the student writes in ${appDili} (matching the app language), respond normally as instructed above.`;
-
-    const sohbetModeli = genAI.getGenerativeModel({
-      model: 'gemini-3.5-flash',
-      systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimati + ogrenciBaglamiOlustur(zayifKonular),
-      // Nadir "cok uzun cevap" durumlarina karsi guvenlik tavani —
-      // normal cok-adimli aciklamalar bu sinira asla yaklasmaz
-      generationConfig: { maxOutputTokens: 2048 },
-    });
+    // Önbellekli (ya da yedek) sohbet modelini al
+    const sohbetModeli = await sohbetModeliOlustur(dil);
 
     if (!mesajlar || !Array.isArray(mesajlar)) {
       return res.status(400).json({ hata: 'Mesaj listesi gerekli.' });
@@ -824,6 +867,10 @@ If the student writes in ${appDili} (matching the app language), respond normall
     // Son mesaj - metin, fotoğraf ve/veya dosya içerebilir
     const sonMesajVerisi = mesajlarKarsilamaHaric[mesajlarKarsilamaHaric.length - 1];
     const sonMesajParts = [];
+    // Öğrenci bağlamı (zayıf konular) önbelleğe girmediği için mesaj
+    // içeriğine küçük bir not olarak ekleniyor
+    const baglamNotu2 = ogrenciBaglamiOlustur(zayifKonular);
+    if (baglamNotu2) sonMesajParts.push({ text: baglamNotu2.trim() });
     if (sonMesajVerisi.metin && sonMesajVerisi.metin.trim()) {
       sonMesajParts.push({ text: sonMesajVerisi.metin });
     }
