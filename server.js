@@ -503,12 +503,37 @@ If it is a solve/calculate request: work through it, show the answer, done. End 
 If it is a concept question: give the intuition first, then the mechanics, then a concrete example. Optional: mention a common mistake students make.
 
 TYPE B - Step system:
-Use this exact format, no variations:
+Use this EXACT format for every single step, with ZERO deviations. This is a hard technical requirement — the app parses these tags literally, so any deviation breaks the display for the student.
 
 [ADIM]
 Step title (3-6 words)
 ---
 Step content. Write real substance here: intuition, mechanics, example. No filler. No questions inside steps.
+[/ADIM]
+
+MANDATORY formatting rules — violating ANY of these breaks the app's rendering:
+- [ADIM] is ALWAYS on its own line, completely alone — never followed by text on the same line.
+- The step title is ALWAYS on the next line by itself.
+- The line "---" ALWAYS separates the title from the content — never omit it.
+- [/ADIM] is ALWAYS on its own line at the very end of that step, completely alone — you must close EVERY step you open. A step opened with [ADIM] that is never closed with [/ADIM] will make the entire response fail to display correctly.
+- Never merge two steps. Never put [ADIM] for the next step before closing the previous one with [/ADIM].
+
+Concrete example of a full TYPE B response with 3 steps (copy this structure exactly, only the words change):
+
+[ADIM]
+Setting up the equation
+---
+Here is the actual explanation content for step one, written in full sentences.
+[/ADIM]
+[ADIM]
+Solving for x
+---
+Here is the actual explanation content for step two.
+[/ADIM]
+[ADIM]
+Final answer
+---
+Here is the actual explanation content for step three, ending with the conclusion.
 [/ADIM]
 
 Rules for steps:
@@ -871,6 +896,23 @@ function _adimlariAyikla(metin) {
   while ((eslesme = format2Deseni.exec(metin)) !== null) {
     const baslik = eslesme[1].trim();
     const icerik = eslesme[2].trim();
+    if (!baslik || !icerik) continue;
+    const gorsel = _gorselEtiketiniAyikla(icerik);
+    const temizIcerik = icerik.replace(/\[GORSEL:[^\]]*\]/g, '').trim();
+    adimlar.push({ baslik, icerik: temizIcerik, gorsel });
+  }
+
+  if (adimlar.length > 0) return adimlar;
+
+  // Format 3: [ADIM] Başlık (aynı satırda)\nİçerik... [ADIM] Başlık2...
+  // Model bazen [/ADIM] kapanışını hiç yazmıyor ve başlığı [ADIM] ile aynı
+  // satıra koyuyor — bu durumu da yakalayan son bir yedek yöntem
+  const format3Deseni = /\[ADIM\]\s*([^\n]*)\n([\s\S]*?)(?=\[ADIM\]|$)/g;
+  while ((eslesme = format3Deseni.exec(metin)) !== null) {
+    const baslik = eslesme[1].trim();
+    let icerik = eslesme[2].trim();
+    // İçerik yanlışlıkla bir sonraki [/ADIM] etiketini içeriyorsa temizle
+    icerik = icerik.replace(/\[\/ADIM\]\s*$/, '').trim();
     if (!baslik || !icerik) continue;
     const gorsel = _gorselEtiketiniAyikla(icerik);
     const temizIcerik = icerik.replace(/\[GORSEL:[^\]]*\]/g, '').trim();
