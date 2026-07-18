@@ -560,7 +560,45 @@ Never use both tags in the same response. Never use a tag for a topic you have n
 VISUALS:
 For coordinate geometry: [GORSEL:koordinat|noktalar=(x1,y1)|cizgi=(x1,y1)-(x2,y2)]
 For number lines: [GORSEL:sayidogrusu|nokta=5|aralik=2,8]
-Max 1 visual per response. Only when it genuinely helps.`;
+Max 1 visual per response. Only when it genuinely helps.
+
+MATH FORMATTING — MANDATORY:
+The app renders math using LaTeX. ANY mathematical expression — equations, formulas, fractions, exponents, roots, Greek letters, integrals, matrices, anything beyond plain numbers — MUST be wrapped in LaTeX delimiters or it will display as broken/unreadable text to the student. This is not optional.
+- Inline math (within a sentence): wrap in single dollar signs, e.g. "The area is $A = \\pi r^2$."
+- Standalone/block equations (on their own line): wrap in double dollar signs, e.g. $$\\frac{-b \\pm \\sqrt{b^2-4ac}}{2a}$$
+- Use real LaTeX commands: \\frac{}{}, \\sqrt{}, ^{} for exponents, _{} for subscripts, \\pi, \\theta, \\int, \\sum, \\infty, etc. Never write "x^2" or "sqrt(x)" as plain text — always "$x^2$" and "$\\sqrt{x}$".
+- Even a single variable or simple expression referenced in a sentence (e.g. "solve for $x$") should be wrapped, for visual consistency.
+- This applies in every context: plain responses, step boxes, everywhere.
+
+TABLES:
+When information is genuinely tabular (comparisons, structured data with multiple attributes per row, side-by-side facts), render it as a real table instead of prose or a plain list. Use this exact format:
+[TABLO]
+Header 1 | Header 2 | Header 3
+Row 1 value | Row 1 value | Row 1 value
+Row 2 value | Row 2 value | Row 2 value
+[/TABLO]
+Rules:
+- First line inside the tags is always the header row.
+- Separate columns with a single | character. Keep cell text short.
+- Every row must have the same number of columns as the header.
+- Only use a table when the data genuinely has a row/column structure — do not force simple lists or short answers into a table.
+- Max 1 table per response.
+
+STUDENT CONTEXT:
+If a STUDENT CONTEXT block is provided separately for this conversation (listing topics the student has been struggling with), you have real access to that data — it is not a guess. Use it naturally when relevant: if the current topic overlaps with something they've struggled with, you may briefly and warmly acknowledge it (e.g. "This connects to [topic], which you've been finding tricky — let's make sure it clicks this time"). Do not force it into unrelated conversations, and do not mention it in every message — only when it genuinely adds value.`;
+
+// Öğrencinin zayıf olduğu konuları güvenli, sınırlı bir "bağlam" metnine
+// çevirir. Kötüye kullanımı/prompt enjeksiyonunu sınırlamak için en fazla
+// 5 konu, konu başına en fazla 60 karakter kabul edilir.
+function ogrenciBaglamiOlustur(zayifKonular) {
+  if (!Array.isArray(zayifKonular) || zayifKonular.length === 0) return '';
+  const temizKonular = zayifKonular
+    .filter((k) => typeof k === 'string' && k.trim().length > 0)
+    .slice(0, 5)
+    .map((k) => k.trim().substring(0, 60));
+  if (temizKonular.length === 0) return '';
+  return `\n\nSTUDENT CONTEXT: This student has been struggling with these topics recently: ${temizKonular.join(', ')}.`;
+}
 
 const model = genAI.getGenerativeModel({
   model: 'gemini-2.5-flash', // hızlı ve ucuz model, ders sorularına yetiyor
@@ -585,7 +623,7 @@ const MAKS_GECMIS_MESAJ = 16;
 // ---------------------------------------------------------
 app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, krediGerekli(10), async (req, res) => {
   try {
-    const { mesajlar, dil } = req.body;
+    const { mesajlar, dil, zayifKonular } = req.body;
 
     const dilAdlari = {
       'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish',
@@ -603,7 +641,7 @@ If the student writes in ${appDili} (matching the app language), respond normall
 
     const sohbetModeli = genAI.getGenerativeModel({
       model: 'gemini-2.5-flash',
-      systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimati,
+      systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimati + ogrenciBaglamiOlustur(zayifKonular),
     });
 
     if (!mesajlar || !Array.isArray(mesajlar)) {
@@ -692,7 +730,7 @@ If the student writes in ${appDili} (matching the app language), respond normall
 // ---------------------------------------------------------
 app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, krediGerekli(10), async (req, res) => {
   try {
-    const { mesajlar, dil } = req.body;
+    const { mesajlar, dil, zayifKonular } = req.body;
 
     // Dil talimatını sistem promptuna ekle
     const dilAdlari = {
@@ -711,7 +749,7 @@ If the student writes in ${appDili} (matching the app language), respond normall
 
     const sohbetModeli = genAI.getGenerativeModel({
       model: 'gemini-2.5-flash',
-      systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimati,
+      systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimati + ogrenciBaglamiOlustur(zayifKonular),
     });
 
     if (!mesajlar || !Array.isArray(mesajlar)) {
