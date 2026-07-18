@@ -1056,7 +1056,7 @@ SADECE JSON formatında yanıt ver, başka hiçbir şey yazma:
 Eğer açık uçlu soru tercih edersen secenekler dizisini boş bırak: "secenekler": []
 Her soruda sadece bir doğru cevap olsun. Aciklama 1-2 cümle olsun.`;
 
-    const result = await model.generateContent(prompt);
+    const result = await ucuzModel.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
     const soru = JSON.parse(text);
     res.json(soru);
@@ -1120,7 +1120,7 @@ Kurallar:
 - Her kartın arka yüzü net ve anlaşılır bir cevap olsun (max 30 kelime)
 - Kartlar temel kavramları kapsamalı, ezbere değil anlamaya yönelik olmalı`;
 
-    const result = await model.generateContent(prompt);
+    const result = await ucuzModel.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
     const veri = JSON.parse(text);
     res.json(veri);
@@ -1500,7 +1500,7 @@ app.post('/sayfa-analiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('s
       ? `${baglamMetni}\n\nKullanıcının sorusu: ${soru}\n\nBu soruyu sayfa içeriğine dayanarak yanıtla. Kısa ve net ol.`
       : `${baglamMetni}\n\nBu sayfayı öğrenci için 3-4 cümlede özetle. Ana konuyu ve önemli noktaları vurgula.`;
 
-    const result = await model.generateContent(prompt);
+    const result = await ucuzModel.generateContent(prompt);
     res.json({ cevap: result.response.text() });
   } catch (hata) {
     console.error('Sayfa analiz hatası:', hata);
