@@ -1153,33 +1153,42 @@ Return exactly ${secilenKaynaklar.length} items, matching the order above. Never
       try { etiketler = JSON.parse(etiketText); } catch { etiketler = []; }
 
       // GÜVENLİK AĞI: Model yine de kısa/genel/domain-benzeri bir başlık
-      // üretirse (tek kelime, ör. "Biology", ya da "space.com" gibi bir
-      // site adı), önce geçerli gerçek başlığa geri düş — o da yoksa
-      // bu haberi TAMAMEN atla (listeye hiç dahil etme)
-      const genelKelimeler = ['biology', 'physics', 'science', 'space', 'history',
-        'philosophy', 'technology', 'psychology', 'chemistry', 'news', 'biyoloji',
+      // üretirse (tek kelime, ör. "Biology", ya da "Latest biology news
+      // and discoveries" gibi kategori+dolgu kelimeden oluşan boş bir
+      // cümle, ya da "space.com" gibi bir site adı), önce geçerli gerçek
+      // başlığa geri düş — o da yoksa bu haberi TAMAMEN atla
+      const kategoriKelimeleri = ['biology', 'physics', 'science', 'space', 'history',
+        'philosophy', 'technology', 'psychology', 'chemistry', 'biyoloji',
         'fizik', 'bilim', 'uzay', 'tarih', 'felsefe', 'teknoloji', 'psikoloji', 'kimya'];
+      // "news", "latest", "update", "discoveries" gibi içeriksiz dolgu kelimeler —
+      // bunlar kategori kelimesiyle birlikte geçiyorsa cümle muhtemelen boş/genel demektir
+      const dolguDeseni = /\b(news|update|updates|latest|developments?|discoveries|discovery|research|articles?|haberleri|gelismeleri|gelismeler|guncel|arastirmalari)\b/i;
       // Domain benzeri mi? (boşluksuz, "kelime.uzanti" formatında)
       const domainBenzeriMi = (metin) => /^[\w-]+(\.[\w-]+)+$/i.test(metin.trim());
 
+      const baslikGenelMi = (metin) => {
+        const kucuk = metin.toLowerCase();
+        const kelimeSayisi = metin.split(/\s+/).filter(Boolean).length;
+        if (kelimeSayisi < 4) return true;
+        if (domainBenzeriMi(metin)) return true;
+        // Tam olarak tek bir kategori kelimesiyse
+        if (kategoriKelimeleri.includes(kucuk.trim())) return true;
+        // Kategori kelimesi + dolgu kelime birlikte geçiyorsa (örn. "biology news and discoveries")
+        const kategoriVar = kategoriKelimeleri.some((kk) => new RegExp(`\\b${kk}\\b`, 'i').test(kucuk));
+        const dolguVar = dolguDeseni.test(kucuk);
+        if (kategoriVar && dolguVar && kelimeSayisi <= 7) return true;
+        return false;
+      };
+
       haberler = secilenKaynaklar.map((k, i) => {
         let baslik = (etiketler[i]?.baslik || '').trim();
-        const kelimeSayisi = baslik.split(/\s+/).filter(Boolean).length;
-        const gecersizMi = kelimeSayisi < 4
-          || genelKelimeler.includes(baslik.toLowerCase())
-          || domainBenzeriMi(baslik);
+        const gecersizMi = !baslik || baslikGenelMi(baslik);
 
         if (gecersizMi) {
           if (k.gercekBaslikGecerli) {
             baslik = k.gercekBaslik; // gerçek (doğrulanmış çok-kelimeli) başlığa geri düş
           } else {
             return null; // ne model başlığı ne gerçek başlık güvenilir — bu haberi atla
-          }
-        } else if (!baslik) {
-          if (k.gercekBaslikGecerli) {
-            baslik = k.gercekBaslik;
-          } else {
-            return null;
           }
         }
 
