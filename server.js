@@ -1132,8 +1132,11 @@ Kurallar:
 
 // ---------------------------------------------------------
 // GÜNDEM ENDPOINT - genel bilim/öğrenme haberleri, 1 saatlik önbellek
+// ÖNEMLİ: önbellek DİL BAZINDA tutuluyor — tek/ortak bir önbellek olsaydı,
+// hangi dilde bir istek önce gelip önbelleği doldurursa, o saatte HERKES
+// (hangi dili seçmiş olursa olsun) o dildeki içeriği görürdü.
 // ---------------------------------------------------------
-let _gundemOnbellek = { veri: null, zaman: 0 };
+let _gundemOnbellekleri = {}; // { en: {veri, zaman}, de: {veri, zaman}, ... }
 const GUNDEM_ONBELLEK_SURESI = 60 * 60 * 1000; // 1 saat (ms)
 
 // HTML sayfalarındaki kodlanmış karakterleri (&#x27; &amp;apos; &quot; vb.)
@@ -1212,9 +1215,10 @@ app.get('/gundem', aiIstekSiniri, kimlikDogrula, async (req, res) => {
     const dil = req.query.dil || 'en';
     const simdi = Date.now();
 
-    // Önbellek hâlâ tazeyse, direkt onu döndür — Gemini'ye gitme
-    if (_gundemOnbellek.veri && (simdi - _gundemOnbellek.zaman) < GUNDEM_ONBELLEK_SURESI) {
-      return res.json({ ..._gundemOnbellek.veri, onbellekten: true });
+    // Bu DİLE ait önbellek hâlâ tazeyse, direkt onu döndür — Gemini'ye gitme
+    const buDilinOnbellegi = _gundemOnbellekleri[dil];
+    if (buDilinOnbellegi && (simdi - buDilinOnbellegi.zaman) < GUNDEM_ONBELLEK_SURESI) {
+      return res.json({ ...buDilinOnbellegi.veri, onbellekten: true });
     }
 
     const dilAdlari = {
@@ -1398,13 +1402,14 @@ Keep titles short (under 12 words).`;
     }
 
     const veri = { haberler };
-    _gundemOnbellek = { veri, zaman: simdi };
+    _gundemOnbellekleri[dil] = { veri, zaman: simdi };
     res.json({ ...veri, onbellekten: false });
   } catch (hata) {
     console.error('Gündem hatası:', hata);
-    // Hata olursa, varsa eski önbelleği döndür (boş göstermektense)
-    if (_gundemOnbellek.veri) {
-      return res.json({ ..._gundemOnbellek.veri, onbellekten: true });
+    // Hata olursa, varsa BU DİLİN eski önbelleğini döndür (boş göstermektense)
+    const buDilinOnbellegi = _gundemOnbellekleri[req.query.dil || 'en'];
+    if (buDilinOnbellegi && buDilinOnbellegi.veri) {
+      return res.json({ ...buDilinOnbellegi.veri, onbellekten: true });
     }
     res.status(500).json({ hata: 'Gündem yüklenemedi.', haberler: [] });
   }
