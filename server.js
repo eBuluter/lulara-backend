@@ -1100,13 +1100,23 @@ app.get('/gundem', aiIstekSiniri, kimlikDogrula, async (req, res) => {
       }
       // makaleGibi false ise gercekBaslik ATANMAZ — kategori sayfası
       // başlığı ("X haberleri sayfası" gibi) hiç kullanılmasın diye
+
+      // ÖNEMLİ: Sadece karakter uzunluğu yeterli değil — "space.com" gibi
+      // bir site adı da 9 karakter ama gerçek bir haber başlığı DEĞİL.
+      // Gerçek başlık en az 3 kelimeden oluşmalı (boşluk içermeli).
+      if (k.gercekBaslik) {
+        const kelimeSayisi = k.gercekBaslik.trim().split(/\s+/).filter(Boolean).length;
+        k.gercekBaslikGecerli = kelimeSayisi >= 3 && k.gercekBaslik.length > 12;
+      } else {
+        k.gercekBaslikGecerli = false;
+      }
     }));
 
     // ELEME: Ne gerçek (makale) başlığı ne de anlamlı bir doğrulanmış
     // metni olan kaynakları listeye HİÇ almıyoruz. Az ama doğru haber,
-    // çok ama hatalı/genel ("Biology" gibi) haberden iyidir.
+    // çok ama hatalı/genel ("space.com" gibi) haberden iyidir.
     const secilenKaynaklar = tumSecilenler
-      .filter((k) => (k.gercekBaslik && k.gercekBaslik.length > 8) || (k.baglam && k.baglam.length > 25))
+      .filter((k) => k.gercekBaslikGecerli || (k.baglam && k.baglam.length > 25))
       .slice(0, 8);
 
     let haberler = [];
@@ -1117,7 +1127,7 @@ app.get('/gundem', aiIstekSiniri, kimlikDogrula, async (req, res) => {
       // gerçek başlığı ${appDili}'ye çeviriyor/uyarluyor ve kategori+özet üretiyor.
       const kaynakListesi = secilenKaynaklar.map((k, i) => {
         let kaynakBilgisi;
-        if (k.gercekBaslik) {
+        if (k.gercekBaslikGecerli) {
           kaynakBilgisi = `REAL page title (translate ONLY this into ${appDili}, word-for-word meaning, do NOT summarize into a category): "${k.gercekBaslik}"`;
         } else {
           kaynakBilgisi = `Verified content about this exact source: "${k.baglam}"`;
@@ -1131,9 +1141,9 @@ ${kaynakListesi}
 
 For EACH numbered source above, using ONLY that source's own information, respond with a JSON array in ${appDili} using this exact format:
 [
-  {"baslik": "a specific, complete headline sentence in ${appDili} — at least 5 words, describing the actual news topic. NEVER just a category word like 'Biology' or 'Physics News' or 'Science'.", "kategori": "one English word: Physics, Biology, Space, History, Philosophy, Technology, Psychology, or Chemistry", "kaynak": "publication name", "ozet": "1 short sentence in ${appDili} summarizing that source's information"}
+  {"baslik": "a specific, complete headline sentence in ${appDili} — at least 5 words, describing the actual news topic. NEVER just a category word like 'Biology' or 'Physics News' or 'Science'. NEVER a bare website/domain name like 'space.com' or 'sciencedaily.com'.", "kategori": "one English word: Physics, Biology, Space, History, Philosophy, Technology, Psychology, or Chemistry", "kaynak": "publication name", "ozet": "1 short sentence in ${appDili} summarizing that source's information"}
 ]
-Return exactly ${secilenKaynaklar.length} items, matching the order above. Never copy another source's topic into this one. The "baslik" field is a NEWS HEADLINE, never a single category word.`;
+Return exactly ${secilenKaynaklar.length} items, matching the order above. Never copy another source's topic into this one. The "baslik" field is a NEWS HEADLINE, never a single category word or a bare domain name.`;
 
       const etiketModeli = ucuzModel; // basit çeviri+kategorileme işi, ucuz model yeterli
       const etiketSonuc = await etiketModeli.generateContent(etiketPrompt);
@@ -1142,20 +1152,35 @@ Return exactly ${secilenKaynaklar.length} items, matching the order above. Never
       let etiketler = [];
       try { etiketler = JSON.parse(etiketText); } catch { etiketler = []; }
 
-      // GÜVENLİK AĞI: Model yine de kısa/genel bir başlık üretirse
-      // (tek kelime, ör. "Biology"), gerçek sayfa başlığına geri düş
+      // GÜVENLİK AĞI: Model yine de kısa/genel/domain-benzeri bir başlık
+      // üretirse (tek kelime, ör. "Biology", ya da "space.com" gibi bir
+      // site adı), önce geçerli gerçek başlığa geri düş — o da yoksa
+      // bu haberi TAMAMEN atla (listeye hiç dahil etme)
       const genelKelimeler = ['biology', 'physics', 'science', 'space', 'history',
         'philosophy', 'technology', 'psychology', 'chemistry', 'news', 'biyoloji',
         'fizik', 'bilim', 'uzay', 'tarih', 'felsefe', 'teknoloji', 'psikoloji', 'kimya'];
+      // Domain benzeri mi? (boşluksuz, "kelime.uzanti" formatında)
+      const domainBenzeriMi = (metin) => /^[\w-]+(\.[\w-]+)+$/i.test(metin.trim());
 
       haberler = secilenKaynaklar.map((k, i) => {
         let baslik = (etiketler[i]?.baslik || '').trim();
         const kelimeSayisi = baslik.split(/\s+/).filter(Boolean).length;
-        const cokKisaVeyaGenel = kelimeSayisi < 4 || genelKelimeler.includes(baslik.toLowerCase());
-        if (cokKisaVeyaGenel && k.gercekBaslik) {
-          baslik = k.gercekBaslik; // gerçek başlığa geri düş (çevrilmemiş ama doğru)
+        const gecersizMi = kelimeSayisi < 4
+          || genelKelimeler.includes(baslik.toLowerCase())
+          || domainBenzeriMi(baslik);
+
+        if (gecersizMi) {
+          if (k.gercekBaslikGecerli) {
+            baslik = k.gercekBaslik; // gerçek (doğrulanmış çok-kelimeli) başlığa geri düş
+          } else {
+            return null; // ne model başlığı ne gerçek başlık güvenilir — bu haberi atla
+          }
         } else if (!baslik) {
-          baslik = k.gercekBaslik || k.siteAdi;
+          if (k.gercekBaslikGecerli) {
+            baslik = k.gercekBaslik;
+          } else {
+            return null;
+          }
         }
 
         return {
@@ -1165,7 +1190,7 @@ Return exactly ${secilenKaynaklar.length} items, matching the order above. Never
           kaynak: etiketler[i]?.kaynak || k.siteAdi,
           ozet: etiketler[i]?.ozet || '',
         };
-      });
+      }).filter((h) => h !== null); // hem model hem gerçek başlık güvenilmezse atlanan haberleri temizle
     }
 
     // Grounding boş döndüyse (nadir), eski yönteme geri düş — hiç veri
