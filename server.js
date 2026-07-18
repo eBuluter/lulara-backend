@@ -560,6 +560,9 @@ TEACHING STYLE
 - Be direct. Do not over-explain simple things.
 - If a student says "I do not understand", try a completely different angle, do not repeat yourself
 
+BE CONCISE — this matters:
+Every sentence should earn its place. Do not restate the question back to the student. Do not add throat-clearing before getting to the point ("Let's dive into...", "Great, let's break this down..."). Do not summarize what you just said at the end unless the student explicitly asked for a summary. For TYPE A answers, aim for the shortest response that still genuinely teaches — often 2-4 sentences is enough for a simple question. For TYPE B steps, keep each step tight (2-4 sentences of real content, not 6+). Being concise is not the same as being shallow — keep the actual teaching substance, just cut the padding around it.
+
 SPECIAL CASES
 
 Student says "solve/calculate/find the answer": Work it out step by step (use TYPE B if multi-step), give the final answer clearly, ask "Any questions?" that is it.
@@ -626,7 +629,7 @@ function ogrenciBaglamiOlustur(zayifKonular) {
 }
 
 const model = genAI.getGenerativeModel({
-  model: 'gemini-2.5-flash', // hızlı ve ucuz model, ders sorularına yetiyor
+  model: 'gemini-3.5-flash', // güncel kararlı model — 2.5-flash yeni hesaplara kapatıldığı için geçildi
   systemInstruction: SISTEM_PROMPTU,
 });
 
@@ -641,7 +644,7 @@ const ucuzModel = genAI.getGenerativeModel({
 // Sohbete gönderilen geçmiş mesaj sayısını sınırlıyoruz — uzun sohbetlerde
 // input token'lar sınırsız büyümesin diye. Son 16 mesaj (~8 karşılıklı
 // konuşma) genelde bağlamı korumak için yeterli, maliyeti düşürür.
-const MAKS_GECMIS_MESAJ = 16;
+const MAKS_GECMIS_MESAJ = 12; // 3.5-flash daha pahali oldugu icin biraz daha kisildi
 
 // ---------------------------------------------------------
 // STREAMING ENDPOINT - kelime kelime akıcı cevap
@@ -665,8 +668,11 @@ If the student writes in a language that is NOT one of the app's supported langu
 If the student writes in ${appDili} (matching the app language), respond normally as instructed above.`;
 
     const sohbetModeli = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimati + ogrenciBaglamiOlustur(zayifKonular),
+      // Nadir "cok uzun cevap" durumlarina karsi guvenlik tavani —
+      // normal cok-adimli aciklamalar bu sinira asla yaklasmaz
+      generationConfig: { maxOutputTokens: 2048 },
     });
 
     if (!mesajlar || !Array.isArray(mesajlar)) {
@@ -782,8 +788,11 @@ If the student writes in a language that is NOT one of the app's supported langu
 If the student writes in ${appDili} (matching the app language), respond normally as instructed above.`;
 
     const sohbetModeli = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimati + ogrenciBaglamiOlustur(zayifKonular),
+      // Nadir "cok uzun cevap" durumlarina karsi guvenlik tavani —
+      // normal cok-adimli aciklamalar bu sinira asla yaklasmaz
+      generationConfig: { maxOutputTokens: 2048 },
     });
 
     if (!mesajlar || !Array.isArray(mesajlar)) {
@@ -1167,7 +1176,7 @@ app.get('/gundem', aiIstekSiniri, kimlikDogrula, async (req, res) => {
     const appDili = dilAdlari[dil] || 'English';
 
     const gundemModeli = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       tools: [{ googleSearch: {} }],
     });
 
@@ -1394,7 +1403,7 @@ app.post('/arastir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu',
     }
 
     const arastirmaModeli = genAI.getGenerativeModel({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-3.5-flash',
       tools: [{ googleSearch: {} }],
     });
 
