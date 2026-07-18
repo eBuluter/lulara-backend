@@ -727,6 +727,15 @@ If the student writes in ${appDili} (matching the app language), respond normall
     const oneriler = _onerileriAyikla(hamCevap);
     const gorsel = _gorselEtiketiniAyikla(hamCevap);
 
+    // GEÇİCİ TEŞHİS LOGU — sorunu bulunca kaldırılacak
+    console.log('=== ADIM TESHIS ===');
+    console.log('hamCevap uzunluk:', hamCevap.length);
+    console.log('[ADIM] gecen sayisi:', (hamCevap.match(/\[ADIM\]/g) || []).length);
+    console.log('[/ADIM] gecen sayisi:', (hamCevap.match(/\[\/ADIM\]/g) || []).length);
+    console.log('adimlar.length:', adimlar.length);
+    console.log('hamCevap ilk 300 karakter (JSON):', JSON.stringify(hamCevap.substring(0, 300)));
+    console.log('===================');
+
     let girisCumlesi = hamCevap;
     if (adimlar.length > 0) {
       const ilkEtiket = hamCevap.indexOf('[ADIM]');
