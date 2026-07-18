@@ -654,8 +654,8 @@ const ucuzModel = genAI.getGenerativeModel({
 // ---------------------------------------------------------
 const DIL_ADLARI_ONBELLEK = { en: 'English', de: 'German', fr: 'French', es: 'Spanish', tr: 'Turkish' };
 const _dilOnbellekleri = {}; // { en: { cache, olusturmaZamani }, ... }
-const ONBELLEK_TTL_SANIYE = 3600; // Google tarafında 1 saat yaşasın
-const ONBELLEK_YENILEME_ESIGI_MS = 50 * 60 * 1000; // 50dk sonra biz de tazeleyelim (güvenli pay)
+const ONBELLEK_TTL_SANIYE = 12 * 3600; // Google tarafında 12 saat yaşasın — sistem promptu sık değişmediği için gereksiz yeniden-ödeme azalır
+const ONBELLEK_YENILEME_ESIGI_MS = 11.5 * 60 * 60 * 1000; // 11.5 saat sonra biz de tazeleyelim (güvenli pay)
 
 function dilTalimatiOlustur(appDili) {
   const desteklenenler = Object.values(DIL_ADLARI_ONBELLEK).join(', ');
