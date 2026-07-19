@@ -162,6 +162,26 @@ async function krediDus(uid, miktar, misafirMi = false) {
   });
 }
 
+// ---------------------------------------------------------
+// GÜNLÜK İSTATİSTİK SAYACI — admin panelinde göstermek için
+// her gün ayrı bir Firestore dokümanında basit sayaçlar tutuyoruz.
+// Hata olursa sessizce yutuyoruz — istatistik kaybı, uygulamanın
+// çalışmasını asla engellememeli.
+// ---------------------------------------------------------
+function _bugunTarihStr() {
+  const b = new Date();
+  return `${b.getFullYear()}-${String(b.getMonth() + 1).padStart(2, '0')}-${String(b.getDate()).padStart(2, '0')}`;
+}
+
+async function gunlukIstatistigiArtir(alan) {
+  try {
+    const ref = db.collection('gunluk_istatistikler').doc(_bugunTarihStr());
+    await ref.set({ [alan]: admin.firestore.FieldValue.increment(1) }, { merge: true });
+  } catch (hata) {
+    console.error('Günlük istatistik yazma hatası (yok sayılıyor):', hata.message || hata);
+  }
+}
+
 // Express middleware hâli — belirli bir maliyeti olan endpoint'lere takılır
 function krediGerekli(miktar) {
   return async (req, res, next) => {
@@ -814,6 +834,7 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
     }
 
     // Son veri paketi — adımlar ve öneri butonları için
+    gunlukIstatistigiArtir('sohbetMesaji'); // arka planda, cevabı bekletmeden
     res.write(`data: ${JSON.stringify({ bitti: true, cevap: girisCumlesi, adimlar, gorsel, oneriler })}\n\n`);
     res.end();
 
@@ -1059,6 +1080,7 @@ Her soruda sadece bir doğru cevap olsun. Aciklama 1-2 cümle olsun.`;
     const result = await ucuzModel.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
     const soru = JSON.parse(text);
+    gunlukIstatistigiArtir('quizOlusturma');
     res.json(soru);
   } catch (hata) {
     console.error('Quiz soru hatası:', hata);
@@ -1123,6 +1145,7 @@ Kurallar:
     const result = await ucuzModel.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
     const veri = JSON.parse(text);
+    gunlukIstatistigiArtir('kartOlusturma');
     res.json(veri);
   } catch (hata) {
     console.error('Kart oluşturma hatası:', hata);
@@ -1438,6 +1461,7 @@ Keep titles short (under 12 words).`;
 
     const veri = { haberler };
     _gundemOnbellekleri[dil] = { veri, zaman: simdi };
+    gunlukIstatistigiArtir('trendYenileme');
     res.json({ ...veri, onbellekten: false, yenilendi: true });
   } catch (hata) {
     console.error('Gündem yenileme hatası:', hata);
@@ -1478,6 +1502,7 @@ app.post('/arastir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu',
     // Önbellekte yok — gerçekten Gemini'ye gideceğiz, ŞİMDİ krediyi düş
     try {
       await krediDus(req.uid, 25, req.misafirMi);
+      gunlukIstatistigiArtir('research');
     } catch (krediHatasi) {
       if (krediHatasi.message === 'YETERSIZ_KREDI') {
         return res.status(402).json({
@@ -1551,6 +1576,111 @@ app.post('/sayfa-analiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('s
 // Sunucunun çalışıp çalışmadığını kontrol etmek için basit bir test adresi
 app.get('/', (req, res) => {
   res.send('Ders AI backend çalışıyor ✅');
+});
+
+// ---------------------------------------------------------
+// BASİT YÖNETİCİ PANELİ — kaç kullanıcı var, Premium/misafir dağılımı,
+// son 7 günün günlük kullanım sayıları. Tarayıcıdan ?sifre=... ile açılır.
+// Bu bir şifre kontrolü — Firebase girişi gerektirmez, sadece hızlı bir
+// bakış için. Gerçek yayına çıkınca daha güçlü bir korumaya taşınabilir.
+// ---------------------------------------------------------
+app.get('/admin/panel', async (req, res) => {
+  try {
+    const sifre = req.query.sifre;
+    if (!process.env.ADMIN_SIFRE || sifre !== process.env.ADMIN_SIFRE) {
+      return res.status(403).send('Erişim reddedildi. ?sifre=... parametresi eksik ya da yanlış.');
+    }
+
+    // Kullanıcı sayıları
+    const kullanicilarRef = db.collection('kullanicilar');
+    const toplamSnap = await kullanicilarRef.count().get();
+    const premiumSnap = await kullanicilarRef.where('premium', '==', true).count().get();
+    const misafirSnap = await kullanicilarRef.where('misafir', '==', true).count().get();
+
+    const toplamKullanici = toplamSnap.data().count;
+    const premiumSayisi = premiumSnap.data().count;
+    const misafirSayisi = misafirSnap.data().count;
+    const kayitliSayisi = toplamKullanici - misafirSayisi;
+
+    // Son 7 günün günlük istatistikleri
+    const gunler = [];
+    for (let i = 6; i >= 0; i--) {
+      const t = new Date();
+      t.setDate(t.getDate() - i);
+      const tarihStr = `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+      gunler.push(tarihStr);
+    }
+    const gunlukVeriler = await Promise.all(gunler.map(async (tarih) => {
+      const dok = await db.collection('gunluk_istatistikler').doc(tarih).get();
+      const veri = dok.exists ? dok.data() : {};
+      return {
+        tarih,
+        sohbetMesaji: veri.sohbetMesaji || 0,
+        quizOlusturma: veri.quizOlusturma || 0,
+        kartOlusturma: veri.kartOlusturma || 0,
+        research: veri.research || 0,
+        trendYenileme: veri.trendYenileme || 0,
+      };
+    }));
+
+    const satirlar = gunlukVeriler.map((g) => `
+      <tr>
+        <td>${g.tarih}</td>
+        <td>${g.sohbetMesaji}</td>
+        <td>${g.quizOlusturma}</td>
+        <td>${g.kartOlusturma}</td>
+        <td>${g.research}</td>
+        <td>${g.trendYenileme}</td>
+      </tr>`).join('');
+
+    const toplamMesaj7Gun = gunlukVeriler.reduce((t, g) => t + g.sohbetMesaji, 0);
+
+    res.send(`
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+<meta charset="UTF-8">
+<title>Lulara - Yönetici Paneli</title>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; background: #1A1625; color: #EEE9FF; }
+  h1 { font-size: 24px; }
+  h2 { font-size: 16px; color: #9B92B0; margin-top: 32px; }
+  .kart-satiri { display: flex; gap: 16px; margin-top: 12px; flex-wrap: wrap; }
+  .kart { background: #201B2E; border: 1px solid #3D3660; border-radius: 12px; padding: 16px 20px; min-width: 140px; }
+  .kart .sayi { font-size: 28px; font-weight: 800; color: #6C63FF; }
+  .kart .etiket { font-size: 12px; color: #9B92B0; margin-top: 4px; }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #3D3660; }
+  th { color: #9B92B0; font-weight: 600; }
+  .yenile { color: #6C63FF; font-size: 12px; text-decoration: none; }
+</style>
+</head>
+<body>
+  <h1>📊 Lulara — Yönetici Paneli</h1>
+  <a class="yenile" href="?sifre=${sifre}">↻ Yenile</a>
+
+  <h2>KULLANICILAR</h2>
+  <div class="kart-satiri">
+    <div class="kart"><div class="sayi">${toplamKullanici}</div><div class="etiket">Toplam kullanıcı</div></div>
+    <div class="kart"><div class="sayi">${kayitliSayisi}</div><div class="etiket">Google ile kayıtlı</div></div>
+    <div class="kart"><div class="sayi">${misafirSayisi}</div><div class="etiket">Misafir</div></div>
+    <div class="kart"><div class="sayi">${premiumSayisi}</div><div class="etiket">Premium abone</div></div>
+  </div>
+
+  <h2>SON 7 GÜN — TOPLAM ${toplamMesaj7Gun} SOHBET MESAJI</h2>
+  <table>
+    <tr><th>Tarih</th><th>Sohbet</th><th>Quiz</th><th>Kart</th><th>Research</th><th>Trend yenileme</th></tr>
+    ${satirlar}
+  </table>
+
+  <h2 style="margin-top:40px; font-size:11px; color:#4A4360;">Bu panel şifreyle korunuyor, linki paylaşma.</h2>
+</body>
+</html>
+    `);
+  } catch (hata) {
+    console.error('Admin panel hatası:', hata);
+    res.status(500).send('Panel yüklenemedi: ' + (hata.message || hata));
+  }
 });
 
 app.listen(PORT, () => {
