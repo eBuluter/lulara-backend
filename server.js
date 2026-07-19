@@ -1210,15 +1210,50 @@ async function sayfaBasligiCek(url) {
   }
 }
 
+// GET /gundem — SADECE önbellekten okur, ASLA üretim tetiklemez.
+// Ekran her açıldığında bu çağrılır ama hiçbir zaman maliyete sebep olmaz.
 app.get('/gundem', aiIstekSiniri, kimlikDogrula, async (req, res) => {
   try {
     const dil = req.query.dil || 'en';
+    const buDilinOnbellegi = _gundemOnbellekleri[dil];
+    if (buDilinOnbellegi && buDilinOnbellegi.veri) {
+      const simdi = Date.now();
+      const tazeMi = (simdi - buDilinOnbellegi.zaman) < GUNDEM_ONBELLEK_SURESI;
+      return res.json({ ...buDilinOnbellegi.veri, onbellekten: true, tazeMi });
+    }
+    // Bu dil için hiç üretim yapılmamış — boş dön, kullanıcı "Yenile"ye basmalı
+    res.json({ haberler: [], hicUretilmemis: true });
+  } catch (hata) {
+    console.error('Gündem okuma hatası:', hata);
+    res.status(500).json({ hata: 'Gündem yüklenemedi.', haberler: [] });
+  }
+});
+
+// POST /gundem-yenile — kullanıcı "Yenile" butonuna BİLEREK bastığında
+// çağrılır. Son üretimin üzerinden gerçekten 1 saat geçmişse yeni bir
+// üretim yapar VE 10 kredi düşer; geçmemişse ücretsiz, aynı içeriği döner.
+app.post('/gundem-yenile', aiIstekSiniri, kimlikDogrula, async (req, res) => {
+  try {
+    const dil = req.body.dil || 'en';
     const simdi = Date.now();
 
-    // Bu DİLE ait önbellek hâlâ tazeyse, direkt onu döndür — Gemini'ye gitme
     const buDilinOnbellegi = _gundemOnbellekleri[dil];
-    if (buDilinOnbellegi && (simdi - buDilinOnbellegi.zaman) < GUNDEM_ONBELLEK_SURESI) {
-      return res.json({ ...buDilinOnbellegi.veri, onbellekten: true });
+    const tazeMi = buDilinOnbellegi && (simdi - buDilinOnbellegi.zaman) < GUNDEM_ONBELLEK_SURESI;
+    if (tazeMi) {
+      // Henüz 1 saat geçmemiş — ücretsiz, mevcut içeriği aynen döndür
+      return res.json({ ...buDilinOnbellegi.veri, onbellekten: true, yenilendi: false });
+    }
+
+    // Gerçekten yeni üretim yapılacak — önce krediyi düş
+    try {
+      await krediDus(req.uid, 10, req.misafirMi);
+    } catch (krediHatasi) {
+      if (krediHatasi.message === 'YETERSIZ_KREDI') {
+        return res.status(402).json({
+          hata: 'Yetersiz kredi.', kod: 'YETERSIZ_KREDI', kalanKredi: krediHatasi.kalanKredi,
+        });
+      }
+      throw krediHatasi;
     }
 
     const dilAdlari = {
@@ -1403,15 +1438,15 @@ Keep titles short (under 12 words).`;
 
     const veri = { haberler };
     _gundemOnbellekleri[dil] = { veri, zaman: simdi };
-    res.json({ ...veri, onbellekten: false });
+    res.json({ ...veri, onbellekten: false, yenilendi: true });
   } catch (hata) {
-    console.error('Gündem hatası:', hata);
+    console.error('Gündem yenileme hatası:', hata);
     // Hata olursa, varsa BU DİLİN eski önbelleğini döndür (boş göstermektense)
-    const buDilinOnbellegi = _gundemOnbellekleri[req.query.dil || 'en'];
+    const buDilinOnbellegi = _gundemOnbellekleri[req.body.dil || 'en'];
     if (buDilinOnbellegi && buDilinOnbellegi.veri) {
-      return res.json({ ...buDilinOnbellegi.veri, onbellekten: true });
+      return res.json({ ...buDilinOnbellegi.veri, onbellekten: true, yenilendi: false });
     }
-    res.status(500).json({ hata: 'Gündem yüklenemedi.', haberler: [] });
+    res.status(500).json({ hata: 'Gündem yenilenemedi.', haberler: [] });
   }
 });
 
