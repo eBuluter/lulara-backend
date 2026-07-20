@@ -762,6 +762,13 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
     let mesajlarKarsilamaHaric = mesajlar.slice(1);
     if (mesajlarKarsilamaHaric.length > MAKS_GECMIS_MESAJ) {
       mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(-MAKS_GECMIS_MESAJ);
+      // ÖNEMLİ: Gemini, geçmişin MUTLAKA 'user' rolüyle başlamasını
+      // istiyor. "Son N mesajı al" kesimi bazen tam bir AI (model)
+      // mesajına denk gelebilir — o durumda geçerli bir user mesajı
+      // bulana kadar baştan atıyoruz.
+      while (mesajlarKarsilamaHaric.length > 0 && mesajlarKarsilamaHaric[0].kullaniciMi !== true) {
+        mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(1);
+      }
     }
     const gecmisMesajlar = mesajlarKarsilamaHaric.slice(0, -1);
     const geminiGecmisi = [];
@@ -868,6 +875,13 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, kre
     let mesajlarKarsilamaHaric = mesajlar.slice(1);
     if (mesajlarKarsilamaHaric.length > MAKS_GECMIS_MESAJ) {
       mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(-MAKS_GECMIS_MESAJ);
+      // ÖNEMLİ: Gemini, geçmişin MUTLAKA 'user' rolüyle başlamasını
+      // istiyor. "Son N mesajı al" kesimi bazen tam bir AI (model)
+      // mesajına denk gelebilir — o durumda geçerli bir user mesajı
+      // bulana kadar baştan atıyoruz.
+      while (mesajlarKarsilamaHaric.length > 0 && mesajlarKarsilamaHaric[0].kullaniciMi !== true) {
+        mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(1);
+      }
     }
 
     // Geçmiş mesajları Gemini formatına çeviriyoruz.
