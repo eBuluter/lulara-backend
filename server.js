@@ -447,6 +447,7 @@ app.get('/reklam-ssv-callback', async (req, res) => {
     // reklam ödülü — hem kötüye kullanımı önler hem Premium'un değerini korur.
     const kullaniciRef = db.collection('kullanicilar').doc(String(user_id));
     let limitAsildiMi = false;
+    let yeniKrediDegeri = null;
     await db.runTransaction(async (t) => {
       const dok = await t.get(kullaniciRef);
       let veri = dok.exists ? dok.data() : varsayilanKrediVerisi();
@@ -466,12 +467,15 @@ app.get('/reklam-ssv-callback', async (req, res) => {
 
       veri.kredi = (veri.kredi || 0) + REKLAM_ODUL_MIKTARI;
       veri.reklamOduluSayisi = (veri.reklamOduluSayisi || 0) + 1;
+      yeniKrediDegeri = veri.kredi;
       t.set(kullaniciRef, veri, { merge: true });
       t.set(islemRef, { zaman: Date.now(), userId: String(user_id) });
     });
 
     if (limitAsildiMi) {
       console.log(`Kullanıcı ${user_id} günlük reklam limitine ulaştı, kredi verilmedi`);
+    } else {
+      console.log(`SSV BAŞARILI: Kullanıcı ${user_id} için +${REKLAM_ODUL_MIKTARI} kredi eklendi. Yeni bakiye: ${yeniKrediDegeri}`);
     }
 
     res.status(200).send('OK');
