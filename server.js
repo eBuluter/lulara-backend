@@ -20,6 +20,12 @@ const mammoth = require('mammoth'); // Word (.docx) dosyalarından düz metin ç
 const { GoogleAICacheManager } = require('@google/generative-ai/server'); // acik (explicit) onbellekleme icin
 
 const app = express();
+// Render (ve benzeri barındırma servisleri) isteklerin arkasına bir proxy
+// koyuyor — bu ayar olmadan Express, gerçek kullanıcı IP'sini (X-Forwarded-For
+// üzerinden) doğru okuyamıyor. Bu hem rate limiting'i (aynı IP'ymiş gibi
+// görünüp herkesi tek kişi sayma riski) hem express-rate-limit'in kendi
+// doğrulamasını bozuyordu — "trust proxy" hatası buradan geliyordu.
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
 // Gemini API'sine bağlanmak için kullanacağımız "istemci" (client)
