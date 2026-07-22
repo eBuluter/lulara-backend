@@ -1178,6 +1178,82 @@ Kurallar:
 });
 
 // ---------------------------------------------------------
+// ÖĞRENME PLANI OLUŞTURMA — kullanıcının verdiği konuyu (ve mevcut
+// hakimiyet seviyesini) alıp, sıralı bir alt-konu müfredatı üretir.
+// Kaliteli pedagojik sıralama gerektirdiği için ANA modeli (3.6-flash)
+// kullanıyoruz, ucuz modeli değil — burada kalite gerçekten önemli.
+// ---------------------------------------------------------
+app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(100), async (req, res) => {
+  try {
+    const { konu, seviye, dil, sinavTarihi } = req.body;
+    if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
+
+    const dilAdlari = { 'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish' };
+    const appDili = dilAdlari[dil] || 'English';
+
+    const seviyeAciklamalari = {
+      dusuk: 'The student has LOW familiarity with this topic — assume near-zero prior knowledge. The plan must start from true fundamentals.',
+      orta: 'The student has MODERATE familiarity — they know the basics but have gaps. The plan should briefly cover fundamentals then focus on building solid understanding.',
+      ileri: 'The student has HIGH familiarity already — the plan should focus on refining, filling specific gaps, and advanced/nuanced aspects rather than basics.',
+    };
+    const seviyeAciklama = seviyeAciklamalari[seviye] || seviyeAciklamalari.dusuk;
+
+    // Sınav planı mı (tarih verilmiş) yoksa genel ders planı mı?
+    let kalanGun = null;
+    if (sinavTarihi) {
+      const simdi = new Date();
+      const hedef = new Date(sinavTarihi);
+      kalanGun = Math.max(0, Math.ceil((hedef - simdi) / (1000 * 60 * 60 * 24)));
+    }
+
+    let zamanTalimati = '';
+    let ekstraAlanlar = '';
+    if (kalanGun !== null) {
+      const aciliyet = kalanGun <= 2 ? 'CRITICAL — almost no time left'
+        : kalanGun <= 5 ? 'VERY SHORT — only a few days'
+        : kalanGun <= 14 ? 'LIMITED — about a week or two'
+        : 'AMPLE — plenty of time';
+      zamanTalimati = `
+
+This is an EXAM PREPARATION plan. The exam is in ${kalanGun} day(s). Time pressure: ${aciliyet}.
+- If time is ample: build a thorough plan including real foundational understanding, aiming for genuine mastery and a high grade.
+- If time is limited or very short: prioritize the highest-impact topics only, and set the "uyari" field to a short, honest, encouraging warning in ${appDili} telling the student time is tight and they should focus on breadth/general understanding rather than deep fundamentals. Calibrate the tone to their level: if they are already advanced ("ileri") and time is short, the warning should be light (a quick refresh is enough); if they are at a low level ("dusuk") and time is short, the warning should be more serious and direct about the risk.
+- If time is ample, set "uyari" to an empty string "".
+- For EACH sub-topic, add a "onerilenSure" field: a short suggested study time in ${appDili} (e.g. "~1.5 hours"), sized so that the total across all sub-topics roughly fits within the ${kalanGun} day(s) available (assume the student can study part-time, not full-time).`;
+      ekstraAlanlar = `, "onerilenSure": "suggested study time for this sub-topic, e.g. '~1.5 hours'"`;
+    }
+
+    const prompt = `You are an expert curriculum designer. A student wants to learn: "${konu}"
+
+Student's current level: ${seviyeAciklama}${zamanTalimati}
+
+Break this topic down into an ORDERED sequence of 4-8 sub-topics that, learned in order, will take the student from their current level to solid mastery of "${konu}". Each sub-topic should be small enough to teach in a single focused session (a chat conversation, roughly 10-20 minutes of study).
+
+Respond ONLY in ${appDili}, in this exact JSON format, no other text:
+{
+  ${kalanGun !== null ? '"uyari": "warning message described above, or empty string if time is ample",' : ''}
+  "maddeler": [
+    {"baslik": "short sub-topic name (3-6 words)", "aciklama": "1 short sentence explaining why this comes at this point in the sequence"${ekstraAlanlar}}
+  ]
+}
+
+Rules:
+- Order matters — each sub-topic should build on the previous ones.
+- Titles must be specific and concrete, never vague (bad: "Basics", good: "Verb conjugation in present tense").
+- Match the depth to the student's stated level — do not include topics they already know if level is "ileri", and do not skip fundamentals if level is "dusuk".`;
+
+    const result = await model.generateContent(prompt);
+    const text = result.response.text().replace(/```json|```/g, '').trim();
+    const veri = JSON.parse(text);
+    gunlukIstatistigiArtir('ogrenmePlani');
+    res.json(veri);
+  } catch (hata) {
+    console.error('Öğrenme planı oluşturma hatası:', hata);
+    res.status(500).json({ hata: 'Plan oluşturulamadı.' });
+  }
+});
+
+// ---------------------------------------------------------
 // GÜNDEM ENDPOINT - genel bilim/öğrenme haberleri, 1 saatlik önbellek
 // ÖNEMLİ: önbellek DİL BAZINDA tutuluyor — tek/ortak bir önbellek olsaydı,
 // hangi dilde bir istek önce gelip önbelleği doldurursa, o saatte HERKES
