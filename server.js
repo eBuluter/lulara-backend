@@ -157,6 +157,7 @@ async function krediDus(uid, miktar, misafirMi = false) {
     veri = krediYenile(veri);
 
     if (veri.kredi < miktar) {
+      console.log(`GEÇİCİ TEŞHİS — krediDus reddetti: uid=${uid}, miktar=${miktar}, veri.kredi=${veri.kredi} (tip: ${typeof veri.kredi}), misafirMi=${misafirMi}`);
       const hata = new Error('YETERSIZ_KREDI');
       hata.kalanKredi = veri.kredi;
       throw hata;
@@ -1209,7 +1210,7 @@ Kurallar:
 // Kaliteli pedagojik sıralama gerektirdiği için ANA modeli (3.6-flash)
 // kullanıyoruz, ucuz modeli değil — burada kalite gerçekten önemli.
 // ---------------------------------------------------------
-app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(100), async (req, res) => {
+app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(0), async (req, res) => { // GEÇİCİ: test için 100'den 0'a düşürüldü — TEST BİTİNCE 100'E GERİ AL
   try {
     const { konu, seviye, dil, sinavTarihi } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
