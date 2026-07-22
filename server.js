@@ -661,7 +661,7 @@ function ogrenciBaglamiOlustur(zayifKonular) {
 }
 
 const model = genAI.getGenerativeModel({
-  model: 'gemini-3.5-flash', // güncel kararlı model — 2.5-flash yeni hesaplara kapatıldığı için geçildi
+  model: 'gemini-3.6-flash', // 21 Temmuz 2026'da cikti — 3.5-flash'ten hem ucuz hem kaliteli
   systemInstruction: SISTEM_PROMPTU,
 });
 
@@ -670,7 +670,7 @@ const model = genAI.getGenerativeModel({
 // arka plandaki küçük işleri ucuzlatır. Ana sohbet modeline (yukarıdaki
 // 'model') şimdilik dokunmuyoruz.
 const ucuzModel = genAI.getGenerativeModel({
-  model: 'gemini-3.1-flash-lite',
+  model: 'gemini-3.5-flash-lite',
 });
 
 // ---------------------------------------------------------
@@ -712,7 +712,7 @@ async function dilIcinOnbellekGetir(dilKodu) {
 
   try {
     const yeniOnbellek = await cacheManager.create({
-      model: 'models/gemini-3.5-flash',
+      model: 'models/gemini-3.6-flash',
       systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimatiOlustur(appDili),
       ttlSeconds: ONBELLEK_TTL_SANIYE,
     });
@@ -733,7 +733,7 @@ async function sohbetModeliOlustur(dilKodu) {
 
   if (onbellek) {
     return genAI.getGenerativeModel({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-3.6-flash',
       cachedContent: onbellek,
       generationConfig: { maxOutputTokens: 2048 },
     });
@@ -741,7 +741,7 @@ async function sohbetModeliOlustur(dilKodu) {
 
   // Yedek yol — önbellek kurulamadıysa eskisi gibi normal systemInstruction
   return genAI.getGenerativeModel({
-    model: 'gemini-3.5-flash',
+    model: 'gemini-3.6-flash',
     systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimatiOlustur(appDili),
     generationConfig: { maxOutputTokens: 2048 },
   });
@@ -1309,7 +1309,7 @@ app.post('/gundem-yenile', aiIstekSiniri, kimlikDogrula, async (req, res) => {
     const appDili = dilAdlari[dil] || 'English';
 
     const gundemModeli = genAI.getGenerativeModel({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-3.6-flash',
       tools: [{ googleSearch: {} }],
     });
 
@@ -1539,7 +1539,7 @@ app.post('/arastir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu',
     }
 
     const arastirmaModeli = genAI.getGenerativeModel({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-3.6-flash',
       tools: [{ googleSearch: {} }],
     });
 
