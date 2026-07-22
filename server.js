@@ -631,7 +631,7 @@ The app renders math using LaTeX. ANY mathematical expression — equations, for
 - This applies in every context: plain responses, step boxes, everywhere.
 
 TABLES:
-When information is genuinely tabular (comparisons, structured data with multiple attributes per row, side-by-side facts), render it as a real table instead of prose or a plain list. Use this exact format:
+When information is genuinely tabular (comparisons, structured data with multiple attributes per row, side-by-side facts), render it as a real table instead of prose or a plain list. Use this EXACT format — this is a hard technical requirement, the app parses these tags literally:
 [TABLO]
 Header 1 | Header 2 | Header 3
 Row 1 value | Row 1 value | Row 1 value
@@ -643,6 +643,7 @@ Rules:
 - Every row must have the same number of columns as the header.
 - Only use a table when the data genuinely has a row/column structure — do not force simple lists or short answers into a table.
 - Max 1 table per response.
+- NEVER use standard Markdown table syntax (a row of dashes like |---|---|---| under the header). That format is NOT supported by the app and will display as broken, ugly raw text with pipe and dash characters visible to the student. There is no separator row in this app's table format — go directly from the header line to the first data row.
 
 STUDENT CONTEXT:
 If a STUDENT CONTEXT block is provided separately for this conversation (listing topics the student has been struggling with), you have real access to that data — it is not a guess. Use it naturally when relevant: if the current topic overlaps with something they've struggled with, you may briefly and warmly acknowledge it (e.g. "This connects to [topic], which you've been finding tricky — let's make sure it clicks this time"). Do not force it into unrelated conversations, and do not mention it in every message — only when it genuinely adds value.`;
@@ -829,6 +830,7 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
     }
 
     // Stream bitti — adım ve önerileri işle
+    hamCevap = _markdownTablolariniCevir(hamCevap); // guvenlik agi: markdown tablo varsa cevir
     const adimlar = _adimlariAyikla(hamCevap);
     const oneriler = _onerileriAyikla(hamCevap);
     const gorsel = _gorselEtiketiniAyikla(hamCevap);
@@ -928,11 +930,12 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, kre
 
     const sohbet = sohbetModeli.startChat({ history: geminiGecmisi });
     const sonuc = await sohbet.sendMessage(sonMesajParts);
-    const hamCevap = sonuc.response.text();
+    let hamCevap = sonuc.response.text();
 
     // Önce [ADIM]...[/ADIM] etiketlerini ayıklıyoruz. Eğer AI adım kartları
     // kullandıysa, cevabı bir "adimlar" listesi olarak göndereceğiz.
     // Kullanmadıysa (basit bir açıklamaysa), eskisi gibi düz metin + görsel olarak göndeririz.
+    hamCevap = _markdownTablolariniCevir(hamCevap); // guvenlik agi: markdown tablo varsa cevir
     const adimlar = _adimlariAyikla(hamCevap);
     // Öneri etiketlerini her durumda ayıkla
     const oneriler = _onerileriAyikla(hamCevap);
@@ -974,6 +977,29 @@ function _onerileriAyikla(metin) {
 // Cevap içinde bu etiketler varsa, her birini { baslik, icerik, gorsel } şeklinde
 // bir nesneye çevirip bir liste olarak döndürüyoruz. Yoksa boş liste döner.
 // ---------------------------------------------------------
+// GÜVENLİK AĞI: Model bazen bizim [TABLO] formatımızı değil, standart
+// Markdown tablo sözdizimini (başlık + |---|---| ayraç satırı + veri
+// satırları) kullanabiliyor — bu bizim renderer'ımızda tanınmıyor ve
+// ham | ve - karakterleriyle çirkin metin olarak görünüyor. Burada
+// bunu tespit edip otomatik olarak [TABLO] formatına çeviriyoruz.
+function _markdownTablolariniCevir(metin) {
+  // Bir markdown tablosu deseni: "| ... |" satırı, hemen ardından
+  // sadece -, |, : ve boşluklardan oluşan bir ayraç satırı
+  const desen = /^(\|.+\|)\s*\n\s*(\|[\s\-:|]+\|)\s*\n((?:\|.+\|\s*\n?)+)/gm;
+
+  return metin.replace(desen, (tamEslesme, baslikSatiri, _ayracSatiri, veriSatirlari) => {
+    const satiriTemizle = (s) => s.trim().replace(/^\|/, '').replace(/\|$/, '')
+      .split('|').map((h) => h.trim()).join(' | ');
+
+    const baslik = satiriTemizle(baslikSatiri);
+    const veriler = veriSatirlari.trim().split('\n')
+      .map((satir) => satiriTemizle(satir))
+      .filter((satir) => satir.length > 0);
+
+    return `[TABLO]\n${baslik}\n${veriler.join('\n')}\n[/TABLO]\n`;
+  });
+}
+
 function _adimlariAyikla(metin) {
   const adimlar = [];
 
