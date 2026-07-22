@@ -1254,6 +1254,48 @@ Rules:
 });
 
 // ---------------------------------------------------------
+// KONU KAYNAKLARI BULMA — bir alt-konu için gerçek (uydurma değil,
+// Google aramasıyla doğrulanmış) 3 web kaynağı bulur. Öğrenme planı
+// ekranında her madde için "Resources" bölümünde kullanılır. Kredi
+// ÜCRETSİZ — zaten ödenmiş bir planın küçük bir eklentisi, ve Flutter
+// tarafında her konu için SADECE BİR KEZ çağrılıp sonuç kaydediliyor.
+// ---------------------------------------------------------
+app.post('/konu-kaynaklari-bul', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), async (req, res) => {
+  try {
+    const { konu, dil } = req.body;
+    if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
+
+    const dilAdlari = { 'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish' };
+    const appDili = dilAdlari[dil] || 'English';
+
+    const aramaModeli = genAI.getGenerativeModel({
+      model: 'gemini-3.6-flash',
+      tools: [{ googleSearch: {} }],
+    });
+
+    const prompt = `Search the web for the 3 best educational resources (articles, tutorials, or reference pages — not videos) that clearly explain: "${konu}". Prefer reputable, well-known educational sources.`;
+    const result = await aramaModeli.generateContent(prompt);
+    const grounding = result.response.candidates?.[0]?.groundingMetadata;
+    const chunks = grounding?.groundingChunks || [];
+
+    const gorulenUrller = new Set();
+    const kaynaklar = [];
+    for (const c of chunks) {
+      const web = c.web;
+      if (!web || !web.uri || gorulenUrller.has(web.uri)) continue;
+      gorulenUrller.add(web.uri);
+      kaynaklar.push({ baslik: (web.title || 'Web').trim(), url: web.uri });
+      if (kaynaklar.length >= 3) break;
+    }
+
+    res.json({ kaynaklar });
+  } catch (hata) {
+    console.error('Konu kaynakları bulma hatası:', hata);
+    res.status(500).json({ hata: 'Kaynaklar bulunamadı.', kaynaklar: [] });
+  }
+});
+
+// ---------------------------------------------------------
 // GÜNDEM ENDPOINT - genel bilim/öğrenme haberleri, 1 saatlik önbellek
 // ÖNEMLİ: önbellek DİL BAZINDA tutuluyor — tek/ortak bir önbellek olsaydı,
 // hangi dilde bir istek önce gelip önbelleği doldurursa, o saatte HERKES
