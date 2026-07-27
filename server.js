@@ -663,7 +663,7 @@ function ogrenciBaglamiOlustur(zayifKonular) {
 }
 
 const model = genAI.getGenerativeModel({
-  model: 'gemini-3.5-flash', // 21 Temmuz 2026'da cikti — 3.5-flash'ten hem ucuz hem kaliteli
+  model: 'gemini-3.5-flash',
   systemInstruction: SISTEM_PROMPTU,
 });
 
@@ -735,7 +735,7 @@ async function sohbetModeliOlustur(dilKodu) {
 
   if (onbellek) {
     return genAI.getGenerativeModel({
-      model: 'gemini-3.6-flash',
+      model: 'gemini-3.5-flash',
       cachedContent: onbellek,
       generationConfig: { maxOutputTokens: 2048 },
     });
@@ -743,7 +743,7 @@ async function sohbetModeliOlustur(dilKodu) {
 
   // Yedek yol — önbellek kurulamadıysa eskisi gibi normal systemInstruction
   return genAI.getGenerativeModel({
-    model: 'gemini-3.6-flash',
+    model: 'gemini-3.5-flash',
     systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimatiOlustur(appDili),
     generationConfig: { maxOutputTokens: 2048 },
   });
@@ -1207,8 +1207,8 @@ Kurallar:
 // ---------------------------------------------------------
 // ÖĞRENME PLANI OLUŞTURMA — kullanıcının verdiği konuyu (ve mevcut
 // hakimiyet seviyesini) alıp, sıralı bir alt-konu müfredatı üretir.
-// Kaliteli pedagojik sıralama gerektirdiği için ANA modeli (3.6-flash)
-// kullanıyoruz, ucuz modeli değil — burada kalite gerçekten önemli.
+// Kaliteli pedagojik sıralama gerektirdiği için ANA modeli kullanıyoruz,
+// ucuz modeli değil — burada kalite gerçekten önemli.
 // ---------------------------------------------------------
 app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(0), async (req, res) => { // GEÇİCİ: test için 100'den 0'a düşürüldü — TEST BİTİNCE 100'E GERİ AL
   try {
@@ -1296,7 +1296,7 @@ app.post('/konu-kaynaklari-bul', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSin
     const appDili = dilAdlari[dil] || 'English';
 
     const aramaModeli = genAI.getGenerativeModel({
-      model: 'gemini-3.6-flash',
+      model: 'gemini-3.5-flash',
       tools: [{ googleSearch: {} }],
     });
 
@@ -1454,7 +1454,7 @@ app.post('/gundem-yenile', aiIstekSiniri, kimlikDogrula, async (req, res) => {
     const appDili = dilAdlari[dil] || 'English';
 
     const gundemModeli = genAI.getGenerativeModel({
-      model: 'gemini-3.6-flash',
+      model: 'gemini-3.5-flash',
       tools: [{ googleSearch: {} }],
     });
 
@@ -1684,7 +1684,7 @@ app.post('/arastir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu',
     }
 
     const arastirmaModeli = genAI.getGenerativeModel({
-      model: 'gemini-3.6-flash',
+      model: 'gemini-3.5-flash',
       tools: [{ googleSearch: {} }],
     });
 
