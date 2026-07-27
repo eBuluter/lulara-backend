@@ -663,7 +663,7 @@ function ogrenciBaglamiOlustur(zayifKonular) {
 }
 
 const model = genAI.getGenerativeModel({
-  model: 'gemini-3.5-flash',
+  model: 'gemini-3.6-flash',
   systemInstruction: SISTEM_PROMPTU,
 });
 
@@ -714,7 +714,7 @@ async function dilIcinOnbellekGetir(dilKodu) {
 
   try {
     const yeniOnbellek = await cacheManager.create({
-      model: 'models/gemini-3.5-flash',
+      model: 'models/gemini-3.6-flash',
       systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimatiOlustur(appDili),
       ttlSeconds: ONBELLEK_TTL_SANIYE,
     });
@@ -735,7 +735,7 @@ async function sohbetModeliOlustur(dilKodu) {
 
   if (onbellek) {
     return genAI.getGenerativeModel({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-3.6-flash',
       cachedContent: onbellek,
       generationConfig: { maxOutputTokens: 2048 },
     });
@@ -743,7 +743,7 @@ async function sohbetModeliOlustur(dilKodu) {
 
   // Yedek yol — önbellek kurulamadıysa eskisi gibi normal systemInstruction
   return genAI.getGenerativeModel({
-    model: 'gemini-3.5-flash',
+    model: 'gemini-3.6-flash',
     systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimatiOlustur(appDili),
     generationConfig: { maxOutputTokens: 2048 },
   });
@@ -1296,7 +1296,7 @@ app.post('/konu-kaynaklari-bul', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSin
     const appDili = dilAdlari[dil] || 'English';
 
     const aramaModeli = genAI.getGenerativeModel({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-3.6-flash',
       tools: [{ googleSearch: {} }],
     });
 
@@ -1454,7 +1454,7 @@ app.post('/gundem-yenile', aiIstekSiniri, kimlikDogrula, async (req, res) => {
     const appDili = dilAdlari[dil] || 'English';
 
     const gundemModeli = genAI.getGenerativeModel({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-3.6-flash',
       tools: [{ googleSearch: {} }],
     });
 
@@ -1684,7 +1684,7 @@ app.post('/arastir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu',
     }
 
     const arastirmaModeli = genAI.getGenerativeModel({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-3.6-flash',
       tools: [{ googleSearch: {} }],
     });
 
