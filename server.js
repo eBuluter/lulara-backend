@@ -663,7 +663,7 @@ function ogrenciBaglamiOlustur(zayifKonular) {
 }
 
 const model = genAI.getGenerativeModel({
-  model: 'gemini-3.6-flash', // 21 Temmuz 2026'da cikti — 3.5-flash'ten hem ucuz hem kaliteli
+  model: 'gemini-3.5-flash', // 21 Temmuz 2026'da cikti — 3.5-flash'ten hem ucuz hem kaliteli
   systemInstruction: SISTEM_PROMPTU,
 });
 
@@ -714,7 +714,7 @@ async function dilIcinOnbellekGetir(dilKodu) {
 
   try {
     const yeniOnbellek = await cacheManager.create({
-      model: 'models/gemini-3.6-flash',
+      model: 'models/gemini-3.5-flash',
       systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimatiOlustur(appDili),
       ttlSeconds: ONBELLEK_TTL_SANIYE,
     });
