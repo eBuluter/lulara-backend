@@ -157,7 +157,6 @@ async function krediDus(uid, miktar, misafirMi = false) {
     veri = krediYenile(veri);
 
     if (veri.kredi < miktar) {
-      console.log(`GEÇİCİ TEŞHİS — krediDus reddetti: uid=${uid}, miktar=${miktar}, veri.kredi=${veri.kredi} (tip: ${typeof veri.kredi}), misafirMi=${misafirMi}`);
       const hata = new Error('YETERSIZ_KREDI');
       hata.kalanKredi = veri.kredi;
       throw hata;
@@ -836,15 +835,6 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
     const oneriler = _onerileriAyikla(hamCevap);
     const gorsel = _gorselEtiketiniAyikla(hamCevap);
 
-    // GEÇİCİ TEŞHİS LOGU — sorunu bulunca kaldırılacak
-    console.log('=== ADIM TESHIS ===');
-    console.log('hamCevap uzunluk:', hamCevap.length);
-    console.log('[ADIM] gecen sayisi:', (hamCevap.match(/\[ADIM\]/g) || []).length);
-    console.log('[/ADIM] gecen sayisi:', (hamCevap.match(/\[\/ADIM\]/g) || []).length);
-    console.log('adimlar.length:', adimlar.length);
-    console.log('hamCevap ilk 300 karakter (JSON):', JSON.stringify(hamCevap.substring(0, 300)));
-    console.log('===================');
-
     let girisCumlesi = hamCevap;
     if (adimlar.length > 0) {
       const ilkEtiket = hamCevap.indexOf('[ADIM]');
@@ -1210,7 +1200,7 @@ Kurallar:
 // Kaliteli pedagojik sıralama gerektirdiği için ANA modeli kullanıyoruz,
 // ucuz modeli değil — burada kalite gerçekten önemli.
 // ---------------------------------------------------------
-app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(0), async (req, res) => { // GEÇİCİ: test için 100'den 0'a düşürüldü — TEST BİTİNCE 100'E GERİ AL
+app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(100), async (req, res) => {
   try {
     const { konu, seviye, dil, sinavTarihi } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
