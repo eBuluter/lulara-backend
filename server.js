@@ -1,44 +1,24 @@
 // ===========================================================
 // DERS AI - BACKEND SUNUCUSU
 // ===========================================================
-// Bu dosya, Flutter uygulaması ile Gemini API arasında duran
-// "güvenli aracı" görevi görür. API key'imiz burada saklanır,
-// telefon uygulaması bu key'i HİÇBİR ZAMAN görmez.
-//
-// Akış: Flutter uygulaması -> bu sunucu -> Gemini API -> bu sunucu -> Flutter uygulaması
-// ===========================================================
+require('dotenv').config();
 
-require('dotenv').config(); // .env dosyasındaki gizli bilgileri (API key gibi) okur
-
-const express = require('express'); // basit bir web sunucusu kurmamızı sağlayan kütüphane
-const cors = require('cors'); // Flutter uygulamasının bu sunucuya istek atmasına izin verir
-const { GoogleGenerativeAI } = require('@google/generative-ai'); // Gemini API'sine bağlanmamızı sağlayan resmi araç
-const rateLimit = require('express-rate-limit'); // tek bir kullanıcının/IP'nin kotayı tüketmesini engeller
-const admin = require('firebase-admin'); // kullanıcı kimliğini doğrulamak ve Firestore'a erişmek için
-const crypto = require('crypto'); // AdMob'un reklam ödülü imzasını doğrulamak için (Node yerleşik)
-const mammoth = require('mammoth'); // Word (.docx) dosyalarından düz metin çıkarmak için
-const { GoogleAICacheManager } = require('@google/generative-ai/server'); // acik (explicit) onbellekleme icin
+const express = require('express');
+const cors = require('cors');
+const { GoogleGenerativeAI } = require('@google/generative-ai');
+const rateLimit = require('express-rate-limit');
+const admin = require('firebase-admin');
+const crypto = require('crypto');
+const mammoth = require('mammoth');
+const { GoogleAICacheManager } = require('@google/generative-ai/server');
 
 const app = express();
-// Render (ve benzeri barındırma servisleri) isteklerin arkasına bir proxy
-// koyuyor — bu ayar olmadan Express, gerçek kullanıcı IP'sini (X-Forwarded-For
-// üzerinden) doğru okuyamıyor. Bu hem rate limiting'i (aynı IP'ymiş gibi
-// görünüp herkesi tek kişi sayma riski) hem express-rate-limit'in kendi
-// doğrulamasını bozuyordu — "trust proxy" hatası buradan geliyordu.
 app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
-// Gemini API'sine bağlanmak için kullanacağımız "istemci" (client)
-// API key'i .env dosyasından okunuyor, koda asla yazılmıyor
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const cacheManager = new GoogleAICacheManager(process.env.GEMINI_API_KEY);
 
-// ---------------------------------------------------------
-// FIREBASE ADMIN — kullanıcı kimliğini doğrulamak ve kredi
-// verilerini Firestore'da tutmak için. Servis hesabı JSON'u
-// .env'de base64 olarak saklanıyor (satır sonu/tırnak sorunları
-// yaşamamak için)
-// ---------------------------------------------------------
 const servisHesabiJson = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString('utf-8');
 admin.initializeApp({
   credential: admin.credential.cert(JSON.parse(servisHesabiJson)),
@@ -46,23 +26,16 @@ admin.initializeApp({
 const db = admin.firestore();
 
 app.use(cors());
-app.use(express.json({ limit: '25mb' })); // gelen isteklerin JSON formatında okunmasını sağlar - fotoğraflar için limit büyütüldü
+app.use(express.json({ limit: '25mb' }));
 
-// Gemini'ye giden tüm istekler için genel bir hız sınırı — normal kullanımı
-// hiç etkilemez ama bir hata/döngü/kötüye kullanım tüm bütçeyi bitiremesin diye
 const aiIstekSiniri = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 dakikalık pencere
-  max: 60, // aynı IP'den 15 dakikada en fazla 60 AI isteği
+  windowMs: 15 * 60 * 1000,
+  max: 60,
   message: { hata: 'Too many requests. Please slow down and try again in a few minutes.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
 
-// ---------------------------------------------------------
-// KİMLİK DOĞRULAMA — her istekte Authorization: Bearer <token>
-// header'ını Firebase ile doğrular. Geçersizse istek reddedilir.
-// Uygulamadan geçmeyen kimse backend'i kullanamaz.
-// ---------------------------------------------------------
 async function kimlikDogrula(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -72,8 +45,6 @@ async function kimlikDogrula(req, res, next) {
   try {
     const decoded = await admin.auth().verifyIdToken(token);
     req.uid = decoded.uid;
-    // Firebase, misafir (anonim) girişleri "anonymous" sağlayıcısıyla işaretler.
-    // Bunu kredi sistemi, misafirlere daha düşük tavan vermek için kullanır.
     req.misafirMi = decoded.firebase?.sign_in_provider === 'anonymous';
     next();
   } catch (e) {
@@ -81,13 +52,6 @@ async function kimlikDogrula(req, res, next) {
   }
 }
 
-// ---------------------------------------------------------
-// KREDİ SİSTEMİ — saatlik yenilenen "enerji" mekaniği.
-// Misafir (hesapsız): 50 kapasite, saatte 15 yenilenir — uygulamayı
-//   silip tekrar kurarak sınırsız kredi almayı caydırmak için düşük tutuluyor.
-// Kayıtlı (Google girişi): 200 kapasite, saatte 50 yenilenir.
-// Premium: 2000 kapasite, saatte 500 yenilenir.
-// ---------------------------------------------------------
 const MISAFIR_MAKS_KREDI = 50;
 const MISAFIR_SAATLIK_YENILENME = 15;
 const UCRETSIZ_MAKS_KREDI = 200;
@@ -95,7 +59,6 @@ const UCRETSIZ_SAATLIK_YENILENME = 50;
 const PREMIUM_MAKS_KREDI = 2000;
 const PREMIUM_SAATLIK_YENILENME = 500;
 
-// Verilen kullanıcı verisine, geçen zamana göre kredi yenilemesi uygular
 function krediYenile(veri) {
   const simdi = Date.now();
   const sonYenilenme = veri.sonYenilenmeZamani || simdi;
@@ -114,10 +77,6 @@ function krediYenile(veri) {
     const yenilenenMiktar = Math.floor(gecenSaat * yenilenmeOrani);
     if (yenilenenMiktar > 0) {
       const mevcutKredi = veri.kredi || 0;
-      // ÖNEMLİ: reklam ödülüyle kapasitenin üzerine çıkmış olabilir
-      // (örn. 180/200 iken +100 reklam ödülü = 280). Bu durumda saatlik
-      // yenileme onu asla AŞAĞI çekmemeli — sadece normal aralıktaysa
-      // yukarı taşır, kapasite üstündeyse olduğu gibi bırakır.
       veri.kredi = Math.max(mevcutKredi, Math.min(maksKredi, mevcutKredi + yenilenenMiktar));
       veri.sonYenilenmeZamani = simdi;
     }
@@ -125,20 +84,16 @@ function krediYenile(veri) {
   return veri;
 }
 
-// Yeni kullanıcı için varsayılan kredi verisi
 function varsayilanKrediVerisi(misafirMi = false) {
   return {
     kredi: misafirMi ? MISAFIR_MAKS_KREDI : UCRETSIZ_MAKS_KREDI,
     sonYenilenmeZamani: Date.now(),
     premium: false,
     misafir: misafirMi,
-    streakFreezeHakki: 1, // yeni kullanıcıya küçük bir başlangıç hediyesi
+    streakFreezeHakki: 1,
   };
 }
 
-// Bir kullanıcı misafirken sonradan Google ile giriş yaparsa (aynı UID
-// korunur, sadece sağlayıcı değişir), bunu tespit edip kaydı GÜNCELLER.
-// Tek yönlü: misafirden kayıtlıya geçer, tersi asla olmaz.
 function misafirDurumunuGuncelle(veri, gercekMisafirMi) {
   if (veri.misafir === true && gercekMisafirMi === false) {
     veri.misafir = false;
@@ -146,8 +101,6 @@ function misafirDurumunuGuncelle(veri, gercekMisafirMi) {
   return veri;
 }
 
-// Belirtilen miktarda krediyi güvenli şekilde (transaction ile) düşer.
-// Yetersizse hata fırlatır. req.uid'nin kimlikDogrula'dan geldiği varsayılır.
 async function krediDus(uid, miktar, misafirMi = false) {
   const ref = db.collection('kullanicilar').doc(uid);
   return db.runTransaction(async (t) => {
@@ -168,12 +121,6 @@ async function krediDus(uid, miktar, misafirMi = false) {
   });
 }
 
-// ---------------------------------------------------------
-// GÜNLÜK İSTATİSTİK SAYACI — admin panelinde göstermek için
-// her gün ayrı bir Firestore dokümanında basit sayaçlar tutuyoruz.
-// Hata olursa sessizce yutuyoruz — istatistik kaybı, uygulamanın
-// çalışmasını asla engellememeli.
-// ---------------------------------------------------------
 function _bugunTarihStr() {
   const b = new Date();
   return `${b.getFullYear()}-${String(b.getMonth() + 1).padStart(2, '0')}-${String(b.getDate()).padStart(2, '0')}`;
@@ -188,7 +135,6 @@ async function gunlukIstatistigiArtir(alan) {
   }
 }
 
-// Express middleware hâli — belirli bir maliyeti olan endpoint'lere takılır
 function krediGerekli(miktar) {
   return async (req, res, next) => {
     try {
@@ -208,23 +154,14 @@ function krediGerekli(miktar) {
   };
 }
 
-// ---------------------------------------------------------
-// GİRDİ UZUNLUĞU SINIRLARI — sabit kredi fiyatlandırması (örn. sohbet
-// mesajı = 10 kredi), gönderilen metnin BOYUTUNU hesaba katmıyor. Biri
-// tek bir mesaja on binlerce karakter yapıştırıp gerçek Gemini maliyetini
-// şişirebilir ama yine de sadece 10 kredi öder. Bu middleware'ler, kredi
-// düşülmeden ÖNCE makul olmayan büyüklükteki girdileri reddeder.
-// ---------------------------------------------------------
-const MAKS_MESAJ_UZUNLUGU = 6000; // sohbette tek bir mesaj için
-const MAKS_KONU_UZUNLUGU = 300;   // quiz/kart/research konu başlığı için
-const MAKS_SORU_UZUNLUGU = 2000;  // sayfa analizi / quiz değerlendirme sorusu için
-
-// Sohbet endpoint'leri için: mesajlar dizisindeki her mesajın metnini kontrol eder
-const MAKS_DOSYA_BASE64_UZUNLUGU = 14 * 1024 * 1024; // ~10MB gerçek dosya boyutu (base64 %33 büyür)
+const MAKS_MESAJ_UZUNLUGU = 6000;
+const MAKS_KONU_UZUNLUGU = 300;
+const MAKS_SORU_UZUNLUGU = 2000;
+const MAKS_DOSYA_BASE64_UZUNLUGU = 14 * 1024 * 1024;
 
 function sohbetUzunlugunuKontrolEt(req, res, next) {
   const { mesajlar } = req.body;
-  if (!mesajlar || !Array.isArray(mesajlar)) return next(); // asıl doğrulama route içinde zaten var
+  if (!mesajlar || !Array.isArray(mesajlar)) return next();
   for (const m of mesajlar) {
     if (m.metin && m.metin.length > MAKS_MESAJ_UZUNLUGU) {
       return res.status(400).json({
@@ -242,7 +179,6 @@ function sohbetUzunlugunuKontrolEt(req, res, next) {
   next();
 }
 
-// Tek bir metin alanını (konu, soru, vb.) kontrol eden genel middleware
 function alanUzunlugunuSinirla(alanAdi, maksUzunluk) {
   return (req, res, next) => {
     const deger = req.body?.[alanAdi];
@@ -256,14 +192,7 @@ function alanUzunlugunuSinirla(alanAdi, maksUzunluk) {
   };
 }
 
-// ---------------------------------------------------------
-// DOSYA EKİ İŞLEME — PDF, Word (.docx) ve düz metin (.txt)
-// dosyalarını Gemini'nin anlayacağı bir "part"a çevirir.
-// PDF: Gemini'ye doğrudan gönderilir, Gemini kendisi okur.
-// .docx: mammoth ile önce düz metne çevrilir (Gemini Word'ü okuyamaz).
-// .txt: base64 çözülüp doğrudan metin olarak eklenir.
-// ---------------------------------------------------------
-const MAKS_BELGE_METNI_UZUNLUGU = 20000; // çıkarılan metin için karakter sınırı
+const MAKS_BELGE_METNI_UZUNLUGU = 20000;
 
 async function dosyaEkiniPartaCevir(mesaj) {
   if (!mesaj.dosyaBase64 || !mesaj.dosyaTuru) return null;
@@ -288,7 +217,6 @@ async function dosyaEkiniPartaCevir(mesaj) {
   }
 }
 
-// Kullanıcının güncel kredi durumunu döner (yeniler ama düşmez)
 app.get('/kredi-durumu', kimlikDogrula, async (req, res) => {
   try {
     const ref = db.collection('kullanicilar').doc(req.uid);
@@ -298,7 +226,6 @@ app.get('/kredi-durumu', kimlikDogrula, async (req, res) => {
     veri = krediYenile(veri);
     await ref.set(veri, { merge: true });
 
-    // Bugün için kalan reklam hakkı — gün değiştiyse tam hak var demektir
     const bugun = new Date();
     const bugunStr = `${bugun.getFullYear()}-${bugun.getMonth() + 1}-${bugun.getDate()}`;
     const bugunkuReklamSayisi = veri.reklamOduluGunu === bugunStr ? (veri.reklamOduluSayisi || 0) : 0;
@@ -320,12 +247,6 @@ app.get('/kredi-durumu', kimlikDogrula, async (req, res) => {
   }
 });
 
-// ---------------------------------------------------------
-// STREAK FREEZE — kullanıcı bir günü kaçırdığında serisini
-// korumak için hakkını kullanır. Flutter tarafı, seri kopacağını
-// tespit ettiğinde bu endpoint'i çağırır; hak varsa düşülür ve
-// seri korunur, yoksa normal şekilde sıfırlanır.
-// ---------------------------------------------------------
 app.post('/streak-freeze-kullan', kimlikDogrula, async (req, res) => {
   try {
     const ref = db.collection('kullanicilar').doc(req.uid);
@@ -354,21 +275,13 @@ app.post('/streak-freeze-kullan', kimlikDogrula, async (req, res) => {
   }
 });
 
-// ---------------------------------------------------------
-// ADMOB SSV (SERVER-SIDE VERIFICATION) — reklam ödülü doğrulaması
-// Google, kullanıcı ödüllü reklamı tamamladığında BU adrese kendi
-// sunucularından imzalı bir istek gönderir. Biz imzayı Google'ın
-// açık anahtarlarıyla doğrulayıp, doğruysa krediyi ekliyoruz.
-// Bu, sahte "izledim" isteklerini imkansız hâle getirir çünkü
-// imza sadece Google'ın özel anahtarıyla üretilebilir.
-// ---------------------------------------------------------
 const ADMOB_ANAHTAR_ADRESI = 'https://www.gstatic.com/admob/reward/verifier-keys.json';
 const REKLAM_ODUL_MIKTARI = 100;
-const REKLAM_GUNLUK_LIMIT = 5; // kullanıcı başına günde en fazla 5 reklam ödülü
+const REKLAM_GUNLUK_LIMIT = 5;
 
 let _admobAnahtarlari = null;
 let _admobAnahtarSonCekilme = 0;
-const ADMOB_ANAHTAR_ONBELLEK_SURESI = 12 * 60 * 60 * 1000; // 12 saat
+const ADMOB_ANAHTAR_ONBELLEK_SURESI = 12 * 60 * 60 * 1000;
 
 async function admobAnahtarlariniGetir() {
   const simdi = Date.now();
@@ -382,7 +295,6 @@ async function admobAnahtarlariniGetir() {
   return _admobAnahtarlari;
 }
 
-// Google'ın base64url imzasını Node'un anlayacağı standart Buffer'a çevirir
 function base64UrlToBuffer(base64url) {
   let base64 = base64url.replace(/-/g, '+').replace(/_/g, '/');
   while (base64.length % 4) base64 += '=';
@@ -390,12 +302,6 @@ function base64UrlToBuffer(base64url) {
 }
 
 app.get('/reklam-ssv-callback', async (req, res) => {
-  // ÖNEMLİ: AdMob, bu URL'yi kaydederken ve zaman zaman "erişilebilir mi"
-  // diye basit bir yoklama isteği atar — bu istekte gerçek imza parametreleri
-  // OLMAZ. Google, her durumda HTTP 200 bekliyor; eksik/geçersiz veri olması
-  // "hata" değil, sadece "gerçek bir ödül bildirimi değil" demek. Bu yüzden
-  // aşağıdaki tüm "geçersiz" durumlarda bile 200 dönüyoruz, sadece krediyi
-  // vermiyoruz.
   try {
     const tamSorgu = req.url.split('?')[1] || '';
     const imzaBaslangici = tamSorgu.indexOf('&signature=');
@@ -404,8 +310,6 @@ app.get('/reklam-ssv-callback', async (req, res) => {
       return res.status(200).send('OK');
     }
 
-    // İmzalanan içerik: signature parametresinden ÖNCEKİ her şey
-    // (key_id dahil) — Google'ın imzaladığı tam olarak budur
     const imzalananIcerik = tamSorgu.substring(0, imzaBaslangici);
 
     const { key_id, signature, user_id, transaction_id } = req.query;
@@ -426,7 +330,6 @@ app.get('/reklam-ssv-callback', async (req, res) => {
     dogrulayici.update(imzalananIcerik);
     const imzaBuffer = base64UrlToBuffer(signature);
 
-    // Google'ın imzaları "IEEE P1363" ham formatında (DER değil)
     const gecerliMi = dogrulayici.verify(
       { key: publicKey, dsaEncoding: 'ieee-p1363' },
       imzaBuffer
@@ -434,23 +337,18 @@ app.get('/reklam-ssv-callback', async (req, res) => {
 
     if (!gecerliMi) {
       console.error('SSV imza doğrulaması BAŞARISIZ — sahte istek olabilir');
-      return res.status(200).send('OK'); // Google'a yine 200 dön, ama krediyi VERME
+      return res.status(200).send('OK');
     }
 
-    // Tekrar (replay) koruması — aynı işlem ID'si iki kez kredi vermesin
     const islemRef = db.collection('islenmis_reklam_odulleri').doc(String(transaction_id));
     const islemDoku = await islemRef.get();
     if (islemDoku.exists) {
-      return res.status(200).send('OK'); // zaten işlendi, Google'a yine de 200 dön
+      return res.status(200).send('OK');
     }
 
-    // Bugünün tarihi — günlük reklam sayacını sıfırlamak için
     const bugun = new Date();
     const bugunStr = `${bugun.getFullYear()}-${bugun.getMonth() + 1}-${bugun.getDate()}`;
 
-    // Krediyi ekle — kapasiteyi aşabilir, bu normal (kazanılmış bonus).
-    // GÜNLÜK LİMİT: kullanıcı başına günde en fazla REKLAM_GUNLUK_LIMIT
-    // reklam ödülü — hem kötüye kullanımı önler hem Premium'un değerini korur.
     const kullaniciRef = db.collection('kullanicilar').doc(String(user_id));
     let limitAsildiMi = false;
     let yeniKrediDegeri = null;
@@ -459,7 +357,6 @@ app.get('/reklam-ssv-callback', async (req, res) => {
       let veri = dok.exists ? dok.data() : varsayilanKrediVerisi();
       veri = krediYenile(veri);
 
-      // Gün değiştiyse sayaç sıfırlanır
       if (veri.reklamOduluGunu !== bugunStr) {
         veri.reklamOduluGunu = bugunStr;
         veri.reklamOduluSayisi = 0;
@@ -467,8 +364,8 @@ app.get('/reklam-ssv-callback', async (req, res) => {
 
       if ((veri.reklamOduluSayisi || 0) >= REKLAM_GUNLUK_LIMIT) {
         limitAsildiMi = true;
-        t.set(kullaniciRef, veri, { merge: true }); // gün/sayaç güncellemesini yine de kaydet
-        return; // kredi VERİLMEZ
+        t.set(kullaniciRef, veri, { merge: true });
+        return;
       }
 
       veri.kredi = (veri.kredi || 0) + REKLAM_ODUL_MIKTARI;
@@ -487,17 +384,10 @@ app.get('/reklam-ssv-callback', async (req, res) => {
     res.status(200).send('OK');
   } catch (hata) {
     console.error('SSV callback hatası:', hata);
-    // Hata olsa bile Google'a 200 dön — yoksa AdMob callback URL'i
-    // "bozuk" olarak işaretleyip tamamen devre dışı bırakabilir
     res.status(200).send('OK');
   }
 });
 
-// ---------------------------------------------------------
-// SİSTEM PROMPTU - AI'nin "nasıl davranması gerektiği" talimatı
-// Bu, uygulamanın gerçek "kalbi" - öğrenciye asla direkt cevap
-// vermeyen, adım adım rehberlik eden bir öğretmen gibi davranmasını sağlıyor
-// ---------------------------------------------------------
 const SISTEM_PROMPTU = `You are an expert tutor inside a learning app. Your job is not just to give answers — it is to make students genuinely understand. You adapt to any subject: math, physics, biology, chemistry, history, languages, anything.
 
 MISSION — READ THIS FIRST:
@@ -652,18 +542,39 @@ TOPIC TAGGING — IMPORTANT, used for the student's progress tracking:
 If, and only if, this message is genuinely about a specific academic/study topic (not a greeting, small talk, or off-topic chat), include this tag ONCE, anywhere in your response: [KONU:short topic name]
 - The topic name must be specific and concrete (2-5 words), in the SAME language you are responding in — e.g. [KONU:Türev kuralları], [KONU:Photosynthesis stages], [KONU:French Revolution causes].
 - If the student's message is just a greeting ("hi", "hello", "merhaba"), small talk, a thank-you, or anything that is NOT a real study topic, do NOT include this tag at all — this matters, the app uses this tag to decide whether to log a topic for the student's progress, and greetings must never be logged as topics.
-- Only ever include ONE [KONU:...] tag per response.`;
+- Only ever include ONE [KONU:...] tag per response.
 
-// [KONU:...] etiketini metinden ayıklar — greeting/small-talk mesajlarında
-// hiç yok, gerçek bir çalışma konusu olduğunda AI'nin kendisi ekliyor
+KEY TERM HIGHLIGHTING — makes complex answers easier to navigate:
+Whenever your response mentions an important named entity — a specific person, event, place, technical term, theory, or concept that a student might not fully know and would benefit from a quick definition — wrap it like this: [TERIM:exact term as it appears|short one-sentence definition in the same language you're responding in]
+- The definition must be genuinely short: one clear sentence, no more.
+- Wrap the term inline exactly where it naturally appears in your sentence — the term text itself stays part of the sentence, just tagged.
+- Be selective: only tag things that are genuinely non-obvious and specific (e.g. "the Treaty of Westphalia", "mitochondria", "Bayes' theorem") — never tag common words, never tag the main topic the student already asked about, never tag more than roughly 3-5 terms in one response.
+- Example: "The [TERIM:Treaty of Westphalia|The 1648 peace agreements that ended the Thirty Years' War and established modern state sovereignty] marked a turning point in European history."`;
+
 function _konuEtiketiniAyikla(metin) {
   const eslesme = metin.match(/\[KONU:([^\]]*)\]/);
   return eslesme ? eslesme[1].trim() : null;
 }
 
-// Öğrencinin zayıf olduğu konuları güvenli, sınırlı bir "bağlam" metnine
-// çevirir. Kötüye kullanımı/prompt enjeksiyonunu sınırlamak için en fazla
-// 5 konu, konu başına en fazla 60 karakter kabul edilir.
+// [TERIM:terim|özet] etiketlerini ayıklar VE metinden temizler — geriye
+// { temizMetin, terimler } döner. temizMetin'de etiketler kaybolur ama
+// terimin kendisi (düz metin olarak) yerinde kalır — Flutter tarafı bu
+// düz metni, terimler listesindeki eşleşen terimle bulup tıklanabilir
+// hâle getirecek.
+function _terimleriAyikla(metin) {
+  const terimler = [];
+  const desen = /\[TERIM:([^|\]]+)\|([^\]]+)\]/g;
+  const temizMetin = metin.replace(desen, (tamEslesme, terim, ozet) => {
+    const temizTerim = terim.trim();
+    const temizOzet = ozet.trim();
+    if (temizTerim && temizOzet) {
+      terimler.push({ terim: temizTerim, ozet: temizOzet });
+    }
+    return temizTerim;
+  });
+  return { temizMetin, terimler: terimler.length > 0 ? terimler : null };
+}
+
 function ogrenciBaglamiOlustur(zayifKonular) {
   if (!Array.isArray(zayifKonular) || zayifKonular.length === 0) return '';
   const temizKonular = zayifKonular
@@ -679,27 +590,14 @@ const model = genAI.getGenerativeModel({
   systemInstruction: SISTEM_PROMPTU,
 });
 
-// Basit/yapısal işler için (quiz değerlendirme, kategorileme) daha ucuz
-// ve daha yeni nesil model — asıl sohbet kalitesini etkilemez, sadece
-// arka plandaki küçük işleri ucuzlatır. Ana sohbet modeline (yukarıdaki
-// 'model') şimdilik dokunmuyoruz.
 const ucuzModel = genAI.getGenerativeModel({
   model: 'gemini-3.5-flash-lite',
 });
 
-// ---------------------------------------------------------
-// AÇIK (EXPLICIT) ÖNBELLEKLEME — sistem prompt'u (büyük, sabit kısım)
-// dil başına BİR KEZ Google'ın sunucusuna kaydediliyor, sonraki tüm
-// isteklerde bu önbellek referans gösteriliyor. Bu, otomatik (implicit)
-// önbelleğin trafik zamanlamasına bağlı olma riskini ortadan kaldırıp
-// %90 indirimi GARANTİ hale getiriyor. Öğrenci bazlı bilgiler (zayıf
-// konular) önbelleğe DAHİL EDİLMİYOR — o yüzden hep aynı 5 dil önbelleği
-// (en/de/fr/es/tr) tüm kullanıcılar arasında paylaşılabiliyor.
-// ---------------------------------------------------------
 const DIL_ADLARI_ONBELLEK = { en: 'English', de: 'German', fr: 'French', es: 'Spanish', tr: 'Turkish' };
-const _dilOnbellekleri = {}; // { en: { cache, olusturmaZamani }, ... }
-const ONBELLEK_TTL_SANIYE = 12 * 3600; // Google tarafında 12 saat yaşasın — sistem promptu sık değişmediği için gereksiz yeniden-ödeme azalır
-const ONBELLEK_YENILEME_ESIGI_MS = 11.5 * 60 * 60 * 1000; // 11.5 saat sonra biz de tazeleyelim (güvenli pay)
+const _dilOnbellekleri = {};
+const ONBELLEK_TTL_SANIYE = 12 * 3600;
+const ONBELLEK_YENILEME_ESIGI_MS = 11.5 * 60 * 60 * 1000;
 
 function dilTalimatiOlustur(appDili) {
   const desteklenenler = Object.values(DIL_ADLARI_ONBELLEK).join(', ');
@@ -712,9 +610,6 @@ If the student writes in a language that is NOT one of the app's supported langu
 If the student writes in ${appDili} (matching the app language), respond normally as instructed above.`;
 }
 
-// Verilen dil kodu için geçerli bir önbellek döner — yoksa/eskiyse
-// yeniden oluşturur. Önbellek kurulamazsa null döner (çağıran taraf
-// normal, önbelleksiz systemInstruction'a düşer — uygulama asla bozulmaz).
 async function dilIcinOnbellekGetir(dilKodu) {
   const appDili = DIL_ADLARI_ONBELLEK[dilKodu] || 'English';
   const mevcut = _dilOnbellekleri[dilKodu];
@@ -738,9 +633,6 @@ async function dilIcinOnbellekGetir(dilKodu) {
   }
 }
 
-// Önbellekli ya da (kuramazsa) normal bir sohbet modeli döner.
-// Öğrenci bağlamı (zayıf konular) önbelleğe hiç girmiyor — onu ayrıca
-// çağıran taraf mesaj içeriğine ekleyecek.
 async function sohbetModeliOlustur(dilKodu) {
   const appDili = DIL_ADLARI_ONBELLEK[dilKodu] || 'English';
   const onbellek = await dilIcinOnbellekGetir(dilKodu);
@@ -753,7 +645,6 @@ async function sohbetModeliOlustur(dilKodu) {
     });
   }
 
-  // Yedek yol — önbellek kurulamadıysa eskisi gibi normal systemInstruction
   return genAI.getGenerativeModel({
     model: 'gemini-3.6-flash',
     systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimatiOlustur(appDili),
@@ -761,35 +652,21 @@ async function sohbetModeliOlustur(dilKodu) {
   });
 }
 
-// Sohbete gönderilen geçmiş mesaj sayısını sınırlıyoruz — uzun sohbetlerde
-// input token'lar sınırsız büyümesin diye. Son 16 mesaj (~8 karşılıklı
-// konuşma) genelde bağlamı korumak için yeterli, maliyeti düşürür.
-const MAKS_GECMIS_MESAJ = 12; // 3.5-flash daha pahali oldugu icin biraz daha kisildi
+const MAKS_GECMIS_MESAJ = 12;
 
-// ---------------------------------------------------------
-// STREAMING ENDPOINT - kelime kelime akıcı cevap
-// ---------------------------------------------------------
 app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, krediGerekli(10), async (req, res) => {
   try {
     const { mesajlar, dil, zayifKonular } = req.body;
 
-    // Önbellekli (ya da yedek) sohbet modelini al — dil bazlı, öğrenci
-    // bağlamı dahil değil (o mesaj içeriğine ayrıca eklenecek)
     const sohbetModeli = await sohbetModeliOlustur(dil);
 
     if (!mesajlar || !Array.isArray(mesajlar)) {
       return res.status(400).json({ hata: 'Mesaj listesi gerekli.' });
     }
 
-    // Karşılama mesajını çıkar, sonra en fazla MAKS_GECMIS_MESAJ kadarını
-    // tut — çok uzun sohbetlerde input token maliyetini sınırlar
     let mesajlarKarsilamaHaric = mesajlar.slice(1);
     if (mesajlarKarsilamaHaric.length > MAKS_GECMIS_MESAJ) {
       mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(-MAKS_GECMIS_MESAJ);
-      // ÖNEMLİ: Gemini, geçmişin MUTLAKA 'user' rolüyle başlamasını
-      // istiyor. "Son N mesajı al" kesimi bazen tam bir AI (model)
-      // mesajına denk gelebilir — o durumda geçerli bir user mesajı
-      // bulana kadar baştan atıyoruz.
       while (mesajlarKarsilamaHaric.length > 0 && mesajlarKarsilamaHaric[0].kullaniciMi !== true) {
         mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(1);
       }
@@ -809,9 +686,6 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
 
     const sonMesajVerisi = mesajlarKarsilamaHaric[mesajlarKarsilamaHaric.length - 1];
     const sonMesajParts = [];
-    // Öğrenci bağlamı (zayıf konular) artık önbelleğe girmiyor — bu yüzden
-    // her isteğin son mesajına küçük bir not olarak ekleniyor. Kısa
-    // olduğu için maliyet etkisi ihmal edilebilir düzeyde.
     const baglamNotu = ogrenciBaglamiOlustur(zayifKonular);
     if (baglamNotu) sonMesajParts.push({ text: baglamNotu.trim() });
     if (sonMesajVerisi.metin && sonMesajVerisi.metin.trim()) {
@@ -824,7 +698,6 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
     if (sonMesajDosyaParcasi) sonMesajParts.push(sonMesajDosyaParcasi);
     if (sonMesajParts.length === 0) sonMesajParts.push({ text: 'Bu görseli incele.' });
 
-    // SSE header'ları
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -837,15 +710,15 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
       const metin = chunk.text();
       if (metin) {
         hamCevap += metin;
-        // Her chunk'ı SSE olarak gönder
         res.write(`data: ${JSON.stringify({ chunk: metin })}\n\n`);
       }
     }
 
-    // Stream bitti — adım ve önerileri işle
-    hamCevap = _markdownTablolariniCevir(hamCevap); // guvenlik agi: markdown tablo varsa cevir
-    const konuEtiketi = _konuEtiketiniAyikla(hamCevap); // Progress icin — kucuk konusmalarda null olur
-    hamCevap = hamCevap.replace(/\[KONU:[^\]]*\]/g, '').trim(); // gorunur metinden temizle
+    hamCevap = _markdownTablolariniCevir(hamCevap);
+    const konuEtiketi = _konuEtiketiniAyikla(hamCevap);
+    hamCevap = hamCevap.replace(/\[KONU:[^\]]*\]/g, '').trim();
+    const { temizMetin: hamCevapTerimsiz, terimler } = _terimleriAyikla(hamCevap);
+    hamCevap = hamCevapTerimsiz;
     const adimlar = _adimlariAyikla(hamCevap);
     const oneriler = _onerileriAyikla(hamCevap);
     const gorsel = _gorselEtiketiniAyikla(hamCevap);
@@ -858,9 +731,8 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
       girisCumlesi = hamCevap.replace(/\[GORSEL:[^\]]*\]/g, '').replace(/\[ONERI:[^\]]*\]/g, '').trim();
     }
 
-    // Son veri paketi — adımlar ve öneri butonları için
-    gunlukIstatistigiArtir('sohbetMesaji'); // arka planda, cevabı bekletmeden
-    res.write(`data: ${JSON.stringify({ bitti: true, cevap: girisCumlesi, adimlar, gorsel, oneriler, konu: konuEtiketi })}\n\n`);
+    gunlukIstatistigiArtir('sohbetMesaji');
+    res.write(`data: ${JSON.stringify({ bitti: true, cevap: girisCumlesi, adimlar, gorsel, oneriler, konu: konuEtiketi, terimler })}\n\n`);
     res.end();
 
   } catch (hata) {
@@ -874,36 +746,24 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
   }
 });
 
-// ---------------------------------------------------------
-// ANA ENDPOINT - Flutter uygulaması buraya soru gönderecek
-// ---------------------------------------------------------
 app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, krediGerekli(10), async (req, res) => {
   try {
     const { mesajlar, dil, zayifKonular } = req.body;
 
-    // Önbellekli (ya da yedek) sohbet modelini al
     const sohbetModeli = await sohbetModeliOlustur(dil);
 
     if (!mesajlar || !Array.isArray(mesajlar)) {
       return res.status(400).json({ hata: 'Mesaj listesi gerekli.' });
     }
 
-    // Karşılama mesajını çıkar, sonra en fazla MAKS_GECMIS_MESAJ kadarını
-    // tut — çok uzun sohbetlerde input token maliyetini sınırlar
     let mesajlarKarsilamaHaric = mesajlar.slice(1);
     if (mesajlarKarsilamaHaric.length > MAKS_GECMIS_MESAJ) {
       mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(-MAKS_GECMIS_MESAJ);
-      // ÖNEMLİ: Gemini, geçmişin MUTLAKA 'user' rolüyle başlamasını
-      // istiyor. "Son N mesajı al" kesimi bazen tam bir AI (model)
-      // mesajına denk gelebilir — o durumda geçerli bir user mesajı
-      // bulana kadar baştan atıyoruz.
       while (mesajlarKarsilamaHaric.length > 0 && mesajlarKarsilamaHaric[0].kullaniciMi !== true) {
         mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(1);
       }
     }
 
-    // Geçmiş mesajları Gemini formatına çeviriyoruz.
-    // Fotoğraf/dosya içeren mesajlar için ilgili parts ekliyoruz.
     const gecmisMesajlar2 = mesajlarKarsilamaHaric.slice(0, -1);
     const geminiGecmisi = [];
     for (const m of gecmisMesajlar2) {
@@ -917,11 +777,8 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, kre
       geminiGecmisi.push({ role: m.kullaniciMi ? 'user' : 'model', parts: parts.length > 0 ? parts : [{ text: '' }] });
     }
 
-    // Son mesaj - metin, fotoğraf ve/veya dosya içerebilir
     const sonMesajVerisi = mesajlarKarsilamaHaric[mesajlarKarsilamaHaric.length - 1];
     const sonMesajParts = [];
-    // Öğrenci bağlamı (zayıf konular) önbelleğe girmediği için mesaj
-    // içeriğine küçük bir not olarak ekleniyor
     const baglamNotu2 = ogrenciBaglamiOlustur(zayifKonular);
     if (baglamNotu2) sonMesajParts.push({ text: baglamNotu2.trim() });
     if (sonMesajVerisi.metin && sonMesajVerisi.metin.trim()) {
@@ -938,24 +795,22 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, kre
     const sonuc = await sohbet.sendMessage(sonMesajParts);
     let hamCevap = sonuc.response.text();
 
-    // Önce [ADIM]...[/ADIM] etiketlerini ayıklıyoruz. Eğer AI adım kartları
-    // kullandıysa, cevabı bir "adimlar" listesi olarak göndereceğiz.
-    // Kullanmadıysa (basit bir açıklamaysa), eskisi gibi düz metin + görsel olarak göndeririz.
-    hamCevap = _markdownTablolariniCevir(hamCevap); // guvenlik agi: markdown tablo varsa cevir
-    const konuEtiketi2 = _konuEtiketiniAyikla(hamCevap); // Progress icin — kucuk konusmalarda null olur
-    hamCevap = hamCevap.replace(/\[KONU:[^\]]*\]/g, '').trim(); // gorunur metinden temizle
+    hamCevap = _markdownTablolariniCevir(hamCevap);
+    const konuEtiketi2 = _konuEtiketiniAyikla(hamCevap);
+    hamCevap = hamCevap.replace(/\[KONU:[^\]]*\]/g, '').trim();
+    const { temizMetin: hamCevapTerimsiz2, terimler: terimler2 } = _terimleriAyikla(hamCevap);
+    hamCevap = hamCevapTerimsiz2;
     const adimlar = _adimlariAyikla(hamCevap);
-    // Öneri etiketlerini her durumda ayıkla
     const oneriler = _onerileriAyikla(hamCevap);
 
     if (adimlar.length > 0) {
       const ilkEtiketIndeksi = hamCevap.indexOf('[ADIM]');
       const girisCumlesi = hamCevap.substring(0, ilkEtiketIndeksi).replace(/\[ONERI:[^\]]*\]/g, '').trim();
-      res.json({ cevap: girisCumlesi, adimlar, gorsel: null, oneriler, konu: konuEtiketi2 });
+      res.json({ cevap: girisCumlesi, adimlar, gorsel: null, oneriler, konu: konuEtiketi2, terimler: terimler2 });
     } else {
       const gorsel = _gorselEtiketiniAyikla(hamCevap);
       const temizMetin = hamCevap.replace(/\[GORSEL:[^\]]*\]/g, '').replace(/\[ONERI:[^\]]*\]/g, '').trim();
-      res.json({ cevap: temizMetin, adimlar: null, gorsel, oneriler, konu: konuEtiketi2 });
+      res.json({ cevap: temizMetin, adimlar: null, gorsel, oneriler, konu: konuEtiketi2, terimler: terimler2 });
     }
   } catch (hata) {
     console.error('Gemini API hatası:', hata);
@@ -963,36 +818,20 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, kre
   }
 });
 
-// ---------------------------------------------------------
-// [ONERI:...] ETİKETLERİNİ AYIKLAYAN YARDIMCI FONKSİYON
-// Örnek: [ONERI:kart|konu=türev] → { tur: 'kart', konu: 'türev' }
-// ---------------------------------------------------------
 function _onerileriAyikla(metin) {
   const oneriler = [];
   const desen = /\[ONERI:([^\]]*)\]/g;
   let eslesme;
   while ((eslesme = desen.exec(metin)) !== null) {
     const parcalar = eslesme[1].split('|');
-    const tur = parcalar[0]; // 'kart' veya 'quiz'
+    const tur = parcalar[0];
     const konu = parcalar[1]?.split('=')[1] || '';
     oneriler.push({ tur, konu });
   }
   return oneriler.length > 0 ? oneriler : null;
 }
 
-// ---------------------------------------------------------
-// [ADIM]...[/ADIM] ETİKETLERİNİ AYIKLAYAN YARDIMCI FONKSİYON
-// Cevap içinde bu etiketler varsa, her birini { baslik, icerik, gorsel } şeklinde
-// bir nesneye çevirip bir liste olarak döndürüyoruz. Yoksa boş liste döner.
-// ---------------------------------------------------------
-// GÜVENLİK AĞI: Model bazen bizim [TABLO] formatımızı değil, standart
-// Markdown tablo sözdizimini (başlık + |---|---| ayraç satırı + veri
-// satırları) kullanabiliyor — bu bizim renderer'ımızda tanınmıyor ve
-// ham | ve - karakterleriyle çirkin metin olarak görünüyor. Burada
-// bunu tespit edip otomatik olarak [TABLO] formatına çeviriyoruz.
 function _markdownTablolariniCevir(metin) {
-  // Bir markdown tablosu deseni: "| ... |" satırı, hemen ardından
-  // sadece -, |, : ve boşluklardan oluşan bir ayraç satırı
   const desen = /^(\|.+\|)\s*\n\s*(\|[\s\-:|]+\|)\s*\n((?:\|.+\|\s*\n?)+)/gm;
 
   return metin.replace(desen, (tamEslesme, baslikSatiri, _ayracSatiri, veriSatirlari) => {
@@ -1011,7 +850,6 @@ function _markdownTablolariniCevir(metin) {
 function _adimlariAyikla(metin) {
   const adimlar = [];
 
-  // Format 1: [ADIM]...[/ADIM] — tercih edilen format
   const format1Deseni = /\[ADIM\]([\s\S]*?)\[\/ADIM\]/g;
   let eslesme;
   while ((eslesme = format1Deseni.exec(metin)) !== null) {
@@ -1022,7 +860,6 @@ function _adimlariAyikla(metin) {
       baslik = icerikTam.substring(0, ayracIndeksi).trim();
       icerik = icerikTam.substring(ayracIndeksi + 3).trim();
     } else {
-      // --- yoksa ilk satırı başlık, gerisini içerik kabul et
       const satirlar = icerikTam.split('\n');
       baslik = satirlar[0].trim();
       icerik = satirlar.slice(1).join('\n').trim() || icerikTam;
@@ -1035,7 +872,6 @@ function _adimlariAyikla(metin) {
 
   if (adimlar.length > 0) return adimlar;
 
-  // Format 2: [ADIM]\nBaşlık\nİçerik\n[ADIM]... — kapanış etiketi olmadan
   const format2Deseni = /\[ADIM\]\s*\n([^\n]+)\n([\s\S]*?)(?=\[ADIM\]|\[\/ADIM\]|$)/g;
   while ((eslesme = format2Deseni.exec(metin)) !== null) {
     const baslik = eslesme[1].trim();
@@ -1048,14 +884,10 @@ function _adimlariAyikla(metin) {
 
   if (adimlar.length > 0) return adimlar;
 
-  // Format 3: [ADIM] Başlık (aynı satırda)\nİçerik... [ADIM] Başlık2...
-  // Model bazen [/ADIM] kapanışını hiç yazmıyor ve başlığı [ADIM] ile aynı
-  // satıra koyuyor — bu durumu da yakalayan son bir yedek yöntem
   const format3Deseni = /\[ADIM\]\s*([^\n]*)\n([\s\S]*?)(?=\[ADIM\]|$)/g;
   while ((eslesme = format3Deseni.exec(metin)) !== null) {
     const baslik = eslesme[1].trim();
     let icerik = eslesme[2].trim();
-    // İçerik yanlışlıkla bir sonraki [/ADIM] etiketini içeriyorsa temizle
     icerik = icerik.replace(/\[\/ADIM\]\s*$/, '').trim();
     if (!baslik || !icerik) continue;
     const gorsel = _gorselEtiketiniAyikla(icerik);
@@ -1066,21 +898,13 @@ function _adimlariAyikla(metin) {
   return adimlar;
 }
 
-// ---------------------------------------------------------
-// [GORSEL:...] ETİKETİNİ AYIKLAYAN YARDIMCI FONKSİYON
-// AI'nin ürettiği metin içinde böyle bir etiket varsa, onu basit bir
-// JavaScript nesnesine (object) çeviriyoruz. Yoksa null döndürüyoruz.
-//
-// Örnek girdi:  "[GORSEL:koordinat|noktalar=(2,3);(5,1)|cizgi=(2,3)-(5,1)]"
-// Örnek çıktı:  { tur: 'koordinat', noktalar: [[2,3],[5,1]], cizgi: [[2,3],[5,1]] }
-// ---------------------------------------------------------
 function _gorselEtiketiniAyikla(metin) {
   const eslesme = metin.match(/\[GORSEL:([^\]]*)\]/);
   if (!eslesme) return null;
 
-  const icerik = eslesme[1]; // "koordinat|noktalar=(2,3);(5,1)|cizgi=(2,3)-(5,1)"
+  const icerik = eslesme[1];
   const parcalar = icerik.split('|');
-  const tur = parcalar[0]; // "koordinat" ya da "sayidogrusu"
+  const tur = parcalar[0];
 
   const gorselVerisi = { tur };
 
@@ -1089,13 +913,11 @@ function _gorselEtiketiniAyikla(metin) {
     if (!anahtar || !deger) continue;
 
     if (anahtar === 'noktalar') {
-      // "(2,3);(5,1)" -> [[2,3],[5,1]]
       gorselVerisi.noktalar = deger.split(';').map((nokta) => {
         const [x, y] = nokta.replace(/[()]/g, '').split(',').map(Number);
         return [x, y];
       });
     } else if (anahtar === 'cizgi') {
-      // "(2,3)-(5,1)" -> [[2,3],[5,1]]
       gorselVerisi.cizgi = deger.split('-').map((nokta) => {
         const [x, y] = nokta.replace(/[()]/g, '').split(',').map(Number);
         return [x, y];
@@ -1110,9 +932,6 @@ function _gorselEtiketiniAyikla(metin) {
   return gorselVerisi;
 }
 
-// ---------------------------------------------------------
-// QUIZ ENDPOINT - verilen konuda çoktan seçmeli veya açık uçlu soru üretir
-// ---------------------------------------------------------
 app.post('/quiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(15), async (req, res) => {
   try {
     const { konu, zorluk = 'orta', kacinilacakSorular = [] } = req.body;
@@ -1146,9 +965,6 @@ Her soruda sadece bir doğru cevap olsun. Aciklama 1-2 cümle olsun.`;
   }
 });
 
-// ---------------------------------------------------------
-// QUIZ DEĞERLENDİRME ENDPOINT - açık uçlu sorularda öğrencinin cevabını değerlendirir
-// ---------------------------------------------------------
 app.post('/quiz-degerlendir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('kullaniciCevabi', MAKS_SORU_UZUNLUGU), krediGerekli(5), async (req, res) => {
   try {
     const { soru, dogruCevap, kullaniciCevabi } = req.body;
@@ -1177,9 +993,6 @@ SADECE JSON formatında yanıt ver:
   }
 });
 
-// ---------------------------------------------------------
-// KART OLUŞTURMA ENDPOINT - verilen konuda flashcard üretir
-// ---------------------------------------------------------
 app.post('/kartlar-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(15), async (req, res) => {
   try {
     const { konu } = req.body;
@@ -1211,12 +1024,6 @@ Kurallar:
   }
 });
 
-// ---------------------------------------------------------
-// ÖĞRENME PLANI OLUŞTURMA — kullanıcının verdiği konuyu (ve mevcut
-// hakimiyet seviyesini) alıp, sıralı bir alt-konu müfredatı üretir.
-// Kaliteli pedagojik sıralama gerektirdiği için ANA modeli kullanıyoruz,
-// ucuz modeli değil — burada kalite gerçekten önemli.
-// ---------------------------------------------------------
 app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(1), async (req, res) => { // GEÇİCİ: Sınav Planı testi için 100'den 1'e düşürüldü — TEST BİTİNCE 100'E GERİ AL
   try {
     const { konu, seviye, dil, sinavTarihi } = req.body;
@@ -1232,7 +1039,6 @@ app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuS
     };
     const seviyeAciklama = seviyeAciklamalari[seviye] || seviyeAciklamalari.dusuk;
 
-    // Sınav planı mı (tarih verilmiş) yoksa genel ders planı mı?
     let kalanGun = null;
     if (sinavTarihi) {
       const simdi = new Date();
@@ -1287,13 +1093,6 @@ Rules:
   }
 });
 
-// ---------------------------------------------------------
-// KONU KAYNAKLARI BULMA — bir alt-konu için gerçek (uydurma değil,
-// Google aramasıyla doğrulanmış) 3 web kaynağı bulur. Öğrenme planı
-// ekranında her madde için "Resources" bölümünde kullanılır. Kredi
-// ÜCRETSİZ — zaten ödenmiş bir planın küçük bir eklentisi, ve Flutter
-// tarafında her konu için SADECE BİR KEZ çağrılıp sonuç kaydediliyor.
-// ---------------------------------------------------------
 app.post('/konu-kaynaklari-bul', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), async (req, res) => {
   try {
     const { konu, dil } = req.body;
@@ -1329,19 +1128,9 @@ app.post('/konu-kaynaklari-bul', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSin
   }
 });
 
-// ---------------------------------------------------------
-// GÜNDEM ENDPOINT - genel bilim/öğrenme haberleri, 1 saatlik önbellek
-// ÖNEMLİ: önbellek DİL BAZINDA tutuluyor — tek/ortak bir önbellek olsaydı,
-// hangi dilde bir istek önce gelip önbelleği doldurursa, o saatte HERKES
-// (hangi dili seçmiş olursa olsun) o dildeki içeriği görürdü.
-// ---------------------------------------------------------
-let _gundemOnbellekleri = {}; // { en: {veri, zaman}, de: {veri, zaman}, ... }
-const GUNDEM_ONBELLEK_SURESI = 60 * 60 * 1000; // 1 saat (ms)
+let _gundemOnbellekleri = {};
+const GUNDEM_ONBELLEK_SURESI = 60 * 60 * 1000;
 
-// HTML sayfalarındaki kodlanmış karakterleri (&#x27; &amp;apos; &quot; vb.)
-// gerçek karakterlere çevirir. Bazı sitelerde çift kodlama olabiliyor
-// (örn. &amp;apos; aslında &apos;'in bir kez daha kodlanmış hâli), bu
-// yüzden iki kez uyguluyoruz.
 function htmlVarliklariniCoz(metin) {
   if (!metin) return metin;
   const birKezCoz = (m) => m
@@ -1356,11 +1145,6 @@ function htmlVarliklariniCoz(metin) {
   return birKezCoz(birKezCoz(metin));
 }
 
-// Bir URL'nin GERÇEK sayfa başlığını (<title> veya og:title) çeker.
-// Ayrıca bunun bir KATEGORİ/ANA SAYFA mı yoksa SPESİFİK BİR MAKALE mi
-// olduğunu da tespit eder — kategori sayfalarının başlığı genelde
-// "X haberleri sayfası" gibi genel bir tanıtım cümlesi olur, gerçek
-// haber başlığı değil.
 async function sayfaBasligiCek(url) {
   try {
     const controller = new AbortController();
@@ -1384,33 +1168,25 @@ async function sayfaBasligiCek(url) {
     }
     if (!baslik) return null;
 
-    // HTML kod-çözme — &#x27; ve benzeri kodlar gerçek karaktere dönüşsün
     baslik = htmlVarliklariniCoz(baslik);
 
-    // og:type "article" ise kesin bir makale demektir — güçlü sinyal
     const tipEslesme = html.match(/<meta[^>]+property=["']og:type["'][^>]+content=["']([^"']+)["']/i);
     const ogTipi = tipEslesme ? tipEslesme[1].trim().toLowerCase() : null;
 
-    // URL yol derinliği — kategori sayfaları genelde kısa (örn. /biology),
-    // makaleler genelde uzun ve spesifik (örn. /2024/01/makale-basligi-xyz)
     let yolDerinligi = 0;
     try {
       const cozulenUrl = new URL(yanit.url || url);
       yolDerinligi = cozulenUrl.pathname.split('/').filter(Boolean).length;
     } catch {}
 
-    // Makale gibi mi? og:type açıkça "website" DEĞİLSE ve yol yeterince
-    // derinse (kategori sayfası olma ihtimali düşükse) güvenilir kabul et
     const kategoriSayfasiGibi = ogTipi === 'website' || yolDerinligi < 2;
 
     return { baslik, makaleGibi: !kategoriSayfasiGibi };
   } catch {
-    return null; // zaman aşımı, engellendi, vs. — sorun değil, yedek yönteme düşer
+    return null;
   }
 }
 
-// GET /gundem — SADECE önbellekten okur, ASLA üretim tetiklemez.
-// Ekran her açıldığında bu çağrılır ama hiçbir zaman maliyete sebep olmaz.
 app.get('/gundem', aiIstekSiniri, kimlikDogrula, async (req, res) => {
   try {
     const dil = req.query.dil || 'en';
@@ -1420,7 +1196,6 @@ app.get('/gundem', aiIstekSiniri, kimlikDogrula, async (req, res) => {
       const tazeMi = (simdi - buDilinOnbellegi.zaman) < GUNDEM_ONBELLEK_SURESI;
       return res.json({ ...buDilinOnbellegi.veri, onbellekten: true, tazeMi });
     }
-    // Bu dil için hiç üretim yapılmamış — boş dön, kullanıcı "Yenile"ye basmalı
     res.json({ haberler: [], hicUretilmemis: true });
   } catch (hata) {
     console.error('Gündem okuma hatası:', hata);
@@ -1428,9 +1203,6 @@ app.get('/gundem', aiIstekSiniri, kimlikDogrula, async (req, res) => {
   }
 });
 
-// POST /gundem-yenile — kullanıcı "Yenile" butonuna BİLEREK bastığında
-// çağrılır. Son üretimin üzerinden gerçekten 1 saat geçmişse yeni bir
-// üretim yapar VE 10 kredi düşer; geçmemişse ücretsiz, aynı içeriği döner.
 app.post('/gundem-yenile', aiIstekSiniri, kimlikDogrula, async (req, res) => {
   try {
     const dil = req.body.dil || 'en';
@@ -1439,11 +1211,9 @@ app.post('/gundem-yenile', aiIstekSiniri, kimlikDogrula, async (req, res) => {
     const buDilinOnbellegi = _gundemOnbellekleri[dil];
     const tazeMi = buDilinOnbellegi && (simdi - buDilinOnbellegi.zaman) < GUNDEM_ONBELLEK_SURESI;
     if (tazeMi) {
-      // Henüz 1 saat geçmemiş — ücretsiz, mevcut içeriği aynen döndür
       return res.json({ ...buDilinOnbellegi.veri, onbellekten: true, yenilendi: false });
     }
 
-    // Gerçekten yeni üretim yapılacak — önce krediyi düş
     try {
       await krediDus(req.uid, 10, req.misafirMi);
     } catch (krediHatasi) {
@@ -1465,8 +1235,6 @@ app.post('/gundem-yenile', aiIstekSiniri, kimlikDogrula, async (req, res) => {
       tools: [{ googleSearch: {} }],
     });
 
-    // 1. ADIM: Gerçekten arama yaptır — hem serbest metni hem de gerçek
-    // kaynakları (grounding metadata) alıyoruz.
     const aramaPrompt = `Search the web for 10 current, interesting news items and articles from this week about general science, discovery, space, biology, physics, history, philosophy, technology, or psychology. Mix different topics — don't focus on just one. For each one, write a clear sentence describing the SPECIFIC headline/topic you found (not just the publication name).`;
 
     const result = await gundemModeli.generateContent(aramaPrompt);
@@ -1474,10 +1242,6 @@ app.post('/gundem-yenile', aiIstekSiniri, kimlikDogrula, async (req, res) => {
     const chunks = grounding?.groundingChunks || [];
     const destekler = grounding?.groundingSupports || [];
 
-    // KRİTİK ADIM: groundingSupports, modelin yazdığı her cümleyi o cümleyi
-    // GERÇEKTEN destekleyen kaynak indeksine bağlar. Bu sayede "hangi cümle
-    // hangi URL'ye ait" sorusu tahmine değil, API'nin kendi verisine dayanır
-    // — önceki index-sırasına-güvenme yönteminin yanlış eşleştirme sorununu çözer.
     const chunkIndeksineGoreMetinler = {};
     for (const destek of destekler) {
       const metin = destek.segment?.text;
@@ -1489,8 +1253,6 @@ app.post('/gundem-yenile', aiIstekSiniri, kimlikDogrula, async (req, res) => {
       }
     }
 
-    // Gerçek arama kaynaklarından (grounding) tekilleştirilmiş liste çıkar,
-    // her birine KENDİ gerçek bağlam metnini ekle
     const gorulenUrller = new Set();
     const kaynaklar = [];
     chunks.forEach((c, idx) => {
@@ -1507,20 +1269,12 @@ app.post('/gundem-yenile', aiIstekSiniri, kimlikDogrula, async (req, res) => {
     });
     const tumSecilenler = kaynaklar.slice(0, 12);
 
-    // Her kaynağın GERÇEK sayfa başlığını paralel olarak çek — artık
-    // {baslik, makaleGibi} objesi dönüyor, makaleGibi=false ise bu bir
-    // kategori/ana sayfa demektir, güvenilmez
     await Promise.all(tumSecilenler.map(async (k) => {
       const sonuc = await sayfaBasligiCek(k.url);
       if (sonuc && sonuc.makaleGibi) {
         k.gercekBaslik = sonuc.baslik;
       }
-      // makaleGibi false ise gercekBaslik ATANMAZ — kategori sayfası
-      // başlığı ("X haberleri sayfası" gibi) hiç kullanılmasın diye
 
-      // ÖNEMLİ: Sadece karakter uzunluğu yeterli değil — "space.com" gibi
-      // bir site adı da 9 karakter ama gerçek bir haber başlığı DEĞİL.
-      // Gerçek başlık en az 3 kelimeden oluşmalı (boşluk içermeli).
       if (k.gercekBaslik) {
         const kelimeSayisi = k.gercekBaslik.trim().split(/\s+/).filter(Boolean).length;
         k.gercekBaslikGecerli = kelimeSayisi >= 3 && k.gercekBaslik.length > 12;
@@ -1529,9 +1283,6 @@ app.post('/gundem-yenile', aiIstekSiniri, kimlikDogrula, async (req, res) => {
       }
     }));
 
-    // ELEME: Ne gerçek (makale) başlığı ne de anlamlı bir doğrulanmış
-    // metni olan kaynakları listeye HİÇ almıyoruz. Az ama doğru haber,
-    // çok ama hatalı/genel ("space.com" gibi) haberden iyidir.
     const secilenKaynaklar = tumSecilenler
       .filter((k) => k.gercekBaslikGecerli || (k.baglam && k.baglam.length > 25))
       .slice(0, 8);
@@ -1539,9 +1290,6 @@ app.post('/gundem-yenile', aiIstekSiniri, kimlikDogrula, async (req, res) => {
     let haberler = [];
 
     if (secilenKaynaklar.length > 0) {
-      // 2. ADIM: Her kaynak için gerçek başlığı (varsa) veya doğrulanmış
-      // bağlam metnini veriyoruz. Model artık başlık UYDURMUYOR — sadece
-      // gerçek başlığı ${appDili}'ye çeviriyor/uyarluyor ve kategori+özet üretiyor.
       const kaynakListesi = secilenKaynaklar.map((k, i) => {
         let kaynakBilgisi;
         if (k.gercekBaslikGecerli) {
@@ -1562,25 +1310,17 @@ For EACH numbered source above, using ONLY that source's own information, respon
 ]
 Return exactly ${secilenKaynaklar.length} items, matching the order above. Never copy another source's topic into this one. The "baslik" field is a NEWS HEADLINE, never a single category word or a bare domain name.`;
 
-      const etiketModeli = ucuzModel; // basit çeviri+kategorileme işi, ucuz model yeterli
+      const etiketModeli = ucuzModel;
       const etiketSonuc = await etiketModeli.generateContent(etiketPrompt);
       const etiketText = etiketSonuc.response.text().replace(/```json|```/g, '').trim();
 
       let etiketler = [];
       try { etiketler = JSON.parse(etiketText); } catch { etiketler = []; }
 
-      // GÜVENLİK AĞI: Model yine de kısa/genel/domain-benzeri bir başlık
-      // üretirse (tek kelime, ör. "Biology", ya da "Latest biology news
-      // and discoveries" gibi kategori+dolgu kelimeden oluşan boş bir
-      // cümle, ya da "space.com" gibi bir site adı), önce geçerli gerçek
-      // başlığa geri düş — o da yoksa bu haberi TAMAMEN atla
       const kategoriKelimeleri = ['biology', 'physics', 'science', 'space', 'history',
         'philosophy', 'technology', 'psychology', 'chemistry', 'biyoloji',
         'fizik', 'bilim', 'uzay', 'tarih', 'felsefe', 'teknoloji', 'psikoloji', 'kimya'];
-      // "news", "latest", "update", "discoveries" gibi içeriksiz dolgu kelimeler —
-      // bunlar kategori kelimesiyle birlikte geçiyorsa cümle muhtemelen boş/genel demektir
       const dolguDeseni = /\b(news|update|updates|latest|developments?|discoveries|discovery|research|articles?|haberleri|gelismeleri|gelismeler|guncel|arastirmalari)\b/i;
-      // Domain benzeri mi? (boşluksuz, "kelime.uzanti" formatında)
       const domainBenzeriMi = (metin) => /^[\w-]+(\.[\w-]+)+$/i.test(metin.trim());
 
       const baslikGenelMi = (metin) => {
@@ -1588,9 +1328,7 @@ Return exactly ${secilenKaynaklar.length} items, matching the order above. Never
         const kelimeSayisi = metin.split(/\s+/).filter(Boolean).length;
         if (kelimeSayisi < 4) return true;
         if (domainBenzeriMi(metin)) return true;
-        // Tam olarak tek bir kategori kelimesiyse
         if (kategoriKelimeleri.includes(kucuk.trim())) return true;
-        // Kategori kelimesi + dolgu kelime birlikte geçiyorsa (örn. "biology news and discoveries")
         const kategoriVar = kategoriKelimeleri.some((kk) => new RegExp(`\\b${kk}\\b`, 'i').test(kucuk));
         const dolguVar = dolguDeseni.test(kucuk);
         if (kategoriVar && dolguVar && kelimeSayisi <= 7) return true;
@@ -1603,9 +1341,9 @@ Return exactly ${secilenKaynaklar.length} items, matching the order above. Never
 
         if (gecersizMi) {
           if (k.gercekBaslikGecerli) {
-            baslik = k.gercekBaslik; // gerçek (doğrulanmış çok-kelimeli) başlığa geri düş
+            baslik = k.gercekBaslik;
           } else {
-            return null; // ne model başlığı ne gerçek başlık güvenilir — bu haberi atla
+            return null;
           }
         }
 
@@ -1616,11 +1354,9 @@ Return exactly ${secilenKaynaklar.length} items, matching the order above. Never
           kaynak: etiketler[i]?.kaynak || k.siteAdi,
           ozet: etiketler[i]?.ozet || '',
         };
-      }).filter((h) => h !== null); // hem model hem gerçek başlık güvenilmezse atlanan haberleri temizle
+      }).filter((h) => h !== null);
     }
 
-    // Grounding boş döndüyse (nadir), eski yönteme geri düş — hiç veri
-    // göstermemektense modelin ürettiği JSON'u kullanmak daha iyi
     if (haberler.length === 0) {
       const yedekPrompt = `Find 8-10 current, interesting news items and articles from this week related to general science, learning, discovery, and knowledge — topics like physics, space, biology, history, philosophy, technology, psychology, or any subject a curious student would enjoy.
 
@@ -1641,7 +1377,6 @@ Keep titles short (under 12 words).`;
     res.json({ ...veri, onbellekten: false, yenilendi: true });
   } catch (hata) {
     console.error('Gündem yenileme hatası:', hata);
-    // Hata olursa, varsa BU DİLİN eski önbelleğini döndür (boş göstermektense)
     const buDilinOnbellegi = _gundemOnbellekleri[req.body.dil || 'en'];
     if (buDilinOnbellegi && buDilinOnbellegi.veri) {
       return res.json({ ...buDilinOnbellegi.veri, onbellekten: true, yenilendi: false });
@@ -1650,32 +1385,23 @@ Keep titles short (under 12 words).`;
   }
 });
 
-
-// ---------------------------------------------------------
-// ARAŞTIRMA ENDPOINT — aynı konuyu tekrar arayan farklı kullanıcılar
-// için 1 saatlik önbellek. "Türev nedir" gibi popüler konular
-// tekrar tekrar Gemini'ye gitmez.
-// ---------------------------------------------------------
-const _arastirmaOnbellek = new Map(); // anahtar: "dil:konu" -> {veri, zaman}
-const ARASTIRMA_ONBELLEK_SURESI = 60 * 60 * 1000; // 1 saat
+const _arastirmaOnbellek = new Map();
+const ARASTIRMA_ONBELLEK_SURESI = 60 * 60 * 1000;
 
 app.post('/arastir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), async (req, res) => {
   try {
     const { konu, dil } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
 
-    // Önbellek anahtarı: dil + normalize edilmiş konu (küçük harf, boşluk kırpılmış)
     const anahtarKonu = konu.trim().toLowerCase();
     const onbellekAnahtari = `${dil || 'en'}:${anahtarKonu}`;
     const simdi = Date.now();
 
     const onbellekteki = _arastirmaOnbellek.get(onbellekAnahtari);
     if (onbellekteki && (simdi - onbellekteki.zaman) < ARASTIRMA_ONBELLEK_SURESI) {
-      // Önbellekten geldi — Gemini'ye gitmedik, kullanıcıdan kredi düşme
       return res.json({ ...onbellekteki.veri, onbellekten: true });
     }
 
-    // Önbellekte yok — gerçekten Gemini'ye gideceğiz, ŞİMDİ krediyi düş
     try {
       await krediDus(req.uid, 25, req.misafirMi);
       gunlukIstatistigiArtir('research');
@@ -1722,15 +1448,12 @@ Max 5 kaynak. Güvenilir ve öğrenci için faydalı kaynaklar seç (Wikipedia, 
   }
 });
 
-// ---------------------------------------------------------
-// SAYFA ANALİZ ENDPOINT - gerçek sayfa metnini okuyarak cevaplar
-// ---------------------------------------------------------
 app.post('/sayfa-analiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('soru', MAKS_SORU_UZUNLUGU), krediGerekli(15), async (req, res) => {
   try {
     const { url, baslik, sayfaMetni, soru } = req.body;
     
     const metin = sayfaMetni 
-      ? sayfaMetni.substring(0, 8000) // çok uzun metinleri kısalt
+      ? sayfaMetni.substring(0, 8000)
       : null;
 
     const baglamMetni = metin 
@@ -1749,17 +1472,10 @@ app.post('/sayfa-analiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('s
   }
 });
 
-// Sunucunun çalışıp çalışmadığını kontrol etmek için basit bir test adresi
 app.get('/', (req, res) => {
-  res.send('Ders AI backend çalışıyor ✅');
+  res.send('Ders AI backend calisiyor');
 });
 
-// ---------------------------------------------------------
-// BASİT YÖNETİCİ PANELİ — kaç kullanıcı var, Premium/misafir dağılımı,
-// son 7 günün günlük kullanım sayıları. Tarayıcıdan ?sifre=... ile açılır.
-// Bu bir şifre kontrolü — Firebase girişi gerektirmez, sadece hızlı bir
-// bakış için. Gerçek yayına çıkınca daha güçlü bir korumaya taşınabilir.
-// ---------------------------------------------------------
 app.get('/admin/panel', async (req, res) => {
   try {
     const sifre = req.query.sifre;
@@ -1767,7 +1483,6 @@ app.get('/admin/panel', async (req, res) => {
       return res.status(403).send('Erişim reddedildi. ?sifre=... parametresi eksik ya da yanlış.');
     }
 
-    // Kullanıcı sayıları
     const kullanicilarRef = db.collection('kullanicilar');
     const toplamSnap = await kullanicilarRef.count().get();
     const premiumSnap = await kullanicilarRef.where('premium', '==', true).count().get();
@@ -1778,7 +1493,6 @@ app.get('/admin/panel', async (req, res) => {
     const misafirSayisi = misafirSnap.data().count;
     const kayitliSayisi = toplamKullanici - misafirSayisi;
 
-    // Son 7 günün günlük istatistikleri
     const gunler = [];
     for (let i = 6; i >= 0; i--) {
       const t = new Date();
@@ -1832,8 +1546,8 @@ app.get('/admin/panel', async (req, res) => {
 </style>
 </head>
 <body>
-  <h1>📊 Lulara — Yönetici Paneli</h1>
-  <a class="yenile" href="?sifre=${sifre}">↻ Yenile</a>
+  <h1>Lulara — Yönetici Paneli</h1>
+  <a class="yenile" href="?sifre=${sifre}">Yenile</a>
 
   <h2>KULLANICILAR</h2>
   <div class="kart-satiri">
