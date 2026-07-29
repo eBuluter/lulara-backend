@@ -646,7 +646,20 @@ Rules:
 - NEVER use standard Markdown table syntax (a row of dashes like |---|---|---| under the header). That format is NOT supported by the app and will display as broken, ugly raw text with pipe and dash characters visible to the student. There is no separator row in this app's table format — go directly from the header line to the first data row.
 
 STUDENT CONTEXT:
-If a STUDENT CONTEXT block is provided separately for this conversation (listing topics the student has been struggling with), you have real access to that data — it is not a guess. Use it naturally when relevant: if the current topic overlaps with something they've struggled with, you may briefly and warmly acknowledge it (e.g. "This connects to [topic], which you've been finding tricky — let's make sure it clicks this time"). Do not force it into unrelated conversations, and do not mention it in every message — only when it genuinely adds value.`;
+If a STUDENT CONTEXT block is provided separately for this conversation (listing topics the student has been struggling with), you have real access to that data — it is not a guess. Use it naturally when relevant: if the current topic overlaps with something they've struggled with, you may briefly and warmly acknowledge it (e.g. "This connects to [topic], which you've been finding tricky — let's make sure it clicks this time"). Do not force it into unrelated conversations, and do not mention it in every message — only when it genuinely adds value.
+
+TOPIC TAGGING — IMPORTANT, used for the student's progress tracking:
+If, and only if, this message is genuinely about a specific academic/study topic (not a greeting, small talk, or off-topic chat), include this tag ONCE, anywhere in your response: [KONU:short topic name]
+- The topic name must be specific and concrete (2-5 words), in the SAME language you are responding in — e.g. [KONU:Türev kuralları], [KONU:Photosynthesis stages], [KONU:French Revolution causes].
+- If the student's message is just a greeting ("hi", "hello", "merhaba"), small talk, a thank-you, or anything that is NOT a real study topic, do NOT include this tag at all — this matters, the app uses this tag to decide whether to log a topic for the student's progress, and greetings must never be logged as topics.
+- Only ever include ONE [KONU:...] tag per response.`;
+
+// [KONU:...] etiketini metinden ayıklar — greeting/small-talk mesajlarında
+// hiç yok, gerçek bir çalışma konusu olduğunda AI'nin kendisi ekliyor
+function _konuEtiketiniAyikla(metin) {
+  const eslesme = metin.match(/\[KONU:([^\]]*)\]/);
+  return eslesme ? eslesme[1].trim() : null;
+}
 
 // Öğrencinin zayıf olduğu konuları güvenli, sınırlı bir "bağlam" metnine
 // çevirir. Kötüye kullanımı/prompt enjeksiyonunu sınırlamak için en fazla
@@ -831,6 +844,8 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
 
     // Stream bitti — adım ve önerileri işle
     hamCevap = _markdownTablolariniCevir(hamCevap); // guvenlik agi: markdown tablo varsa cevir
+    const konuEtiketi = _konuEtiketiniAyikla(hamCevap); // Progress icin — kucuk konusmalarda null olur
+    hamCevap = hamCevap.replace(/\[KONU:[^\]]*\]/g, '').trim(); // gorunur metinden temizle
     const adimlar = _adimlariAyikla(hamCevap);
     const oneriler = _onerileriAyikla(hamCevap);
     const gorsel = _gorselEtiketiniAyikla(hamCevap);
@@ -845,7 +860,7 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
 
     // Son veri paketi — adımlar ve öneri butonları için
     gunlukIstatistigiArtir('sohbetMesaji'); // arka planda, cevabı bekletmeden
-    res.write(`data: ${JSON.stringify({ bitti: true, cevap: girisCumlesi, adimlar, gorsel, oneriler })}\n\n`);
+    res.write(`data: ${JSON.stringify({ bitti: true, cevap: girisCumlesi, adimlar, gorsel, oneriler, konu: konuEtiketi })}\n\n`);
     res.end();
 
   } catch (hata) {
@@ -927,6 +942,8 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, kre
     // kullandıysa, cevabı bir "adimlar" listesi olarak göndereceğiz.
     // Kullanmadıysa (basit bir açıklamaysa), eskisi gibi düz metin + görsel olarak göndeririz.
     hamCevap = _markdownTablolariniCevir(hamCevap); // guvenlik agi: markdown tablo varsa cevir
+    const konuEtiketi2 = _konuEtiketiniAyikla(hamCevap); // Progress icin — kucuk konusmalarda null olur
+    hamCevap = hamCevap.replace(/\[KONU:[^\]]*\]/g, '').trim(); // gorunur metinden temizle
     const adimlar = _adimlariAyikla(hamCevap);
     // Öneri etiketlerini her durumda ayıkla
     const oneriler = _onerileriAyikla(hamCevap);
@@ -934,11 +951,11 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, kre
     if (adimlar.length > 0) {
       const ilkEtiketIndeksi = hamCevap.indexOf('[ADIM]');
       const girisCumlesi = hamCevap.substring(0, ilkEtiketIndeksi).replace(/\[ONERI:[^\]]*\]/g, '').trim();
-      res.json({ cevap: girisCumlesi, adimlar, gorsel: null, oneriler });
+      res.json({ cevap: girisCumlesi, adimlar, gorsel: null, oneriler, konu: konuEtiketi2 });
     } else {
       const gorsel = _gorselEtiketiniAyikla(hamCevap);
       const temizMetin = hamCevap.replace(/\[GORSEL:[^\]]*\]/g, '').replace(/\[ONERI:[^\]]*\]/g, '').trim();
-      res.json({ cevap: temizMetin, adimlar: null, gorsel, oneriler });
+      res.json({ cevap: temizMetin, adimlar: null, gorsel, oneriler, konu: konuEtiketi2 });
     }
   } catch (hata) {
     console.error('Gemini API hatası:', hata);
