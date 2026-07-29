@@ -1217,7 +1217,7 @@ Kurallar:
 // Kaliteli pedagojik sıralama gerektirdiği için ANA modeli kullanıyoruz,
 // ucuz modeli değil — burada kalite gerçekten önemli.
 // ---------------------------------------------------------
-app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(100), async (req, res) => {
+app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(1), async (req, res) => { // GEÇİCİ: Sınav Planı testi için 100'den 1'e düşürüldü — TEST BİTİNCE 100'E GERİ AL
   try {
     const { konu, seviye, dil, sinavTarihi } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
