@@ -926,6 +926,13 @@ function _gorselEtiketiniAyikla(metin) {
         const [x, y] = nokta.replace(/[()]/g, '').split(',').map(Number);
         return [x, y];
       });
+    } else if (anahtar === 'poligon') {
+      // Üçgen, dörtgen gibi kapalı şekiller — noktalar sırayla birleştirilip
+      // son noktadan ilk noktaya geri dönen bir çizgiyle kapatılır
+      gorselVerisi.poligon = deger.split(';').map((nokta) => {
+        const [x, y] = nokta.replace(/[()]/g, '').split(',').map(Number);
+        return [x, y];
+      });
     } else if (anahtar === 'nokta') {
       gorselVerisi.nokta = Number(deger);
     } else if (anahtar === 'aralik') {
@@ -938,14 +945,31 @@ function _gorselEtiketiniAyikla(metin) {
 
 app.post('/quiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(15), async (req, res) => {
   try {
-    const { konu, zorluk = 'orta', kacinilacakSorular = [] } = req.body;
+    const { konu, zorluk = 'orta', kacinilacakSorular = [], mod = 'sozel' } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
 
     const kacinmaMetni = kacinilacakSorular.length > 0
       ? `\n\nÖNEMLİ: Aşağıdaki soruları TEKRAR SORMA, farklı bir soru üret:\n${kacinilacakSorular.map((s, i) => `${i+1}. ${s}`).join('\n')}`
       : '';
 
-    const prompt = `Sen bir ders öğretmenisin. "${konu}" konusunda ${zorluk} zorluk seviyesinde bir sınav sorusu oluştur.${kacinmaMetni}
+    const sayisalMi = mod === 'sayisal';
+
+    const gorselTalimati = sayisalMi ? `
+
+Bu bir SAYISAL/GÖRSEL sorudur (Numerical Quiz). Kurallar:
+- Soru gerçek bir hesaplama/problem çözme gerektirmeli — sözel bir tanım sorusu DEĞİL.
+- Sorudaki HER matematiksel ifade (formül, denklem, üs, kesir, birim) LaTeX ile yazılmalı: satır içi "$...$", blok "$$...$$" formatında. Örnek: "Bir cismin hızı $v = 10 \\text{ m/s}$ ise..."
+- ÖNEMLİ: Soru bir geometrik şekil (üçgen, dörtgen, çokgen), koordinat düzlemi, doğru/eğim veya sayı doğrusu ARALIĞI içeriyorsa, bunu SÖZEL olarak tarif etmek YETMEZ — mutlaka aşağıdaki etiketlerden UYGUN OLANINI "soru" metninin İÇİNE, en sona ekleyerek GERÇEKTEN ÇİZ. Öğrenci şekli görmeden çözemeyeceği bir soruda görsel etiketi atlaman ciddi bir hatadır.
+  Üçgen/dörtgen/çokgen için: [GORSEL:koordinat|poligon=(x1,y1);(x2,y2);(x3,y3)]
+  Tekil noktalar için: [GORSEL:koordinat|noktalar=(x1,y1);(x2,y2)]
+  Bir doğru/eğim için: [GORSEL:koordinat|cizgi=(x1,y1)-(x2,y2)]
+  Bunlar birlikte de kullanılabilir: [GORSEL:koordinat|poligon=(0,0);(4,0);(0,3)|noktalar=(0,0);(4,0);(0,3)]
+  Sayı doğrusu için: [GORSEL:sayidogrusu|nokta=5|aralik=2,8]
+- Sadece konu gerçekten soyut/sayısal ve görselin hiçbir katkısı olmayacaksa (örn. basit bir yüzde hesabı) etiketi atla — ama şekil/koordinat/grafik geçen HER soruda mutlaka kullan.
+- Cevap seçenekleri SAYISAL değerler olmalı (gerekirse birimle birlikte), sözel ifadeler değil.
+- Açıklama (aciklama), çözümün kısa adımlarını LaTeX ile göstermeli.` : '';
+
+    const prompt = `Sen bir ders öğretmenisin. "${konu}" konusunda ${zorluk} zorluk seviyesinde bir sınav sorusu oluştur.${kacinmaMetni}${gorselTalimati}
 
 SADECE JSON formatında yanıt ver, başka hiçbir şey yazma:
 {
@@ -958,9 +982,24 @@ SADECE JSON formatında yanıt ver, başka hiçbir şey yazma:
 Eğer açık uçlu soru tercih edersen secenekler dizisini boş bırak: "secenekler": []
 Her soruda sadece bir doğru cevap olsun. Aciklama 1-2 cümle olsun.`;
 
-    const result = await ucuzModel.generateContent(prompt);
+    // Sayısal/görsel sorularda doğruluk (formül/hesap hatası olmaması) çok
+    // daha kritik — kaliteli ana modeli kullanıyoruz. Sözel sorularda
+    // ucuz model yeterli, maliyeti değiştirmiyoruz.
+    const kullanilacakModel = sayisalMi ? model : ucuzModel;
+    const result = await kullanilacakModel.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
     const soru = JSON.parse(text);
+
+    // Sayısal modda soru metninin içine gömülü [GORSEL:...] etiketi varsa
+    // ayıklayıp ayrı bir alan olarak döndür, görünür metinden temizle
+    if (sayisalMi && typeof soru.soru === 'string') {
+      const gorsel = _gorselEtiketiniAyikla(soru.soru);
+      if (gorsel) {
+        soru.gorsel = gorsel;
+        soru.soru = soru.soru.replace(/\[GORSEL:[^\]]*\]/g, '').trim();
+      }
+    }
+
     gunlukIstatistigiArtir('quizOlusturma');
     res.json(soru);
   } catch (hata) {
