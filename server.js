@@ -740,10 +740,10 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
     if (adimlar.length > 0) {
       const ilkEtiket = hamCevap.indexOf('[ADIM]');
       girisCumlesi = ilkEtiket > 0
-        ? hamCevap.substring(0, ilkEtiket).replace(GORSEL_SVG_TEMIZLEME_DESENI, '').replace(/\[ONERI:[^\]]*\]/g, '').trim()
+        ? _gorselSvgTemizle(hamCevap.substring(0, ilkEtiket)).replace(/\[ONERI:[^\]]*\]/g, '').trim()
         : '';
     } else {
-      girisCumlesi = hamCevap.replace(GORSEL_SVG_TEMIZLEME_DESENI, '').replace(/\[ONERI:[^\]]*\]/g, '').trim();
+      girisCumlesi = _gorselSvgTemizle(hamCevap).replace(/\[ONERI:[^\]]*\]/g, '').trim();
     }
 
     gunlukIstatistigiArtir('sohbetMesaji');
@@ -820,11 +820,11 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, kre
 
     if (adimlar.length > 0) {
       const ilkEtiketIndeksi = hamCevap.indexOf('[ADIM]');
-      const girisCumlesi = hamCevap.substring(0, ilkEtiketIndeksi).replace(GORSEL_SVG_TEMIZLEME_DESENI, '').replace(/\[ONERI:[^\]]*\]/g, '').trim();
+      const girisCumlesi = _gorselSvgTemizle(hamCevap.substring(0, ilkEtiketIndeksi)).replace(/\[ONERI:[^\]]*\]/g, '').trim();
       res.json({ cevap: girisCumlesi, adimlar, gorselSvg: null, oneriler, konu: konuEtiketi2, terimler: terimler2 });
     } else {
       const gorselSvg = _gorselSvgAyikla(hamCevap);
-      const temizMetin = hamCevap.replace(GORSEL_SVG_TEMIZLEME_DESENI, '').replace(/\[ONERI:[^\]]*\]/g, '').trim();
+      const temizMetin = _gorselSvgTemizle(hamCevap).replace(/\[ONERI:[^\]]*\]/g, '').trim();
       res.json({ cevap: temizMetin, adimlar: null, gorselSvg, oneriler, konu: konuEtiketi2, terimler: terimler2 });
     }
   } catch (hata) {
@@ -881,7 +881,7 @@ function _adimlariAyikla(metin) {
     }
     if (!icerik) icerik = baslik;
     const gorselSvg = _gorselSvgAyikla(icerik);
-    const temizIcerik = icerik.replace(GORSEL_SVG_TEMIZLEME_DESENI, '').trim();
+    const temizIcerik = _gorselSvgTemizle(icerik).trim();
     adimlar.push({ baslik, icerik: temizIcerik, gorselSvg });
   }
 
@@ -893,7 +893,7 @@ function _adimlariAyikla(metin) {
     const icerik = eslesme[2].trim();
     if (!baslik || !icerik) continue;
     const gorselSvg = _gorselSvgAyikla(icerik);
-    const temizIcerik = icerik.replace(GORSEL_SVG_TEMIZLEME_DESENI, '').trim();
+    const temizIcerik = _gorselSvgTemizle(icerik).trim();
     adimlar.push({ baslik, icerik: temizIcerik, gorselSvg });
   }
 
@@ -906,7 +906,7 @@ function _adimlariAyikla(metin) {
     icerik = icerik.replace(/\[\/ADIM\]\s*$/, '').trim();
     if (!baslik || !icerik) continue;
     const gorselSvg = _gorselSvgAyikla(icerik);
-    const temizIcerik = icerik.replace(GORSEL_SVG_TEMIZLEME_DESENI, '').trim();
+    const temizIcerik = _gorselSvgTemizle(icerik).trim();
     adimlar.push({ baslik, icerik: temizIcerik, gorselSvg });
   }
 
@@ -957,7 +957,7 @@ function _gorselEtiketiniAyikla(metin) {
 // [GORSEL_SVG]<svg ...>...</svg>[/GORSEL_SVG] etiketini ayıklar — AI'nin
 // serbestçe çizdiği ham SVG içeriğini döner (metin olarak, JSON'a çevirmeden).
 // Bulamazsa null döner. Metinden TEMİZLEMEZ — çağıran taraf ayrıca
-// .replace(GORSEL_SVG_TEMIZLEME_DESENI, '') yapmalı.
+// _gorselSvgTemizle(...) çağırmalı.
 const GORSEL_SVG_DESENI = /\[GORSEL_SVG\]([\s\S]*?)\[\/GORSEL_SVG\]/;
 const GORSEL_SVG_TEMIZLEME_DESENI = /\[GORSEL_SVG\][\s\S]*?\[\/GORSEL_SVG\]/g;
 
@@ -972,6 +972,19 @@ function _gorselSvgAyikla(metin) {
   if (!/^<svg[\s>]/.test(svg) || !svg.includes('</svg>')) return null;
   if (/<script|foreignObject|xlink:href\s*=\s*["']https?:/i.test(svg)) return null;
   return svg;
+}
+
+// [GORSEL_SVG]...[/GORSEL_SVG] bloğunu metinden GÜVENLİ şekilde temizler.
+// Normal (kapanmış) blokları siler. EK GÜVENLİK AĞI: cevap token limitine
+// takılıp SVG tam ortasında kesilmişse (kapanış etiketi hiç gelmemişse),
+// açık etiketten itibaren HER ŞEYİ keser — yoksa yarım kalmış ham SVG
+// kodu kullanıcıya kalıcı olarak sızar.
+function _gorselSvgTemizle(metin) {
+  if (typeof metin !== 'string') return metin;
+  let temiz = metin.replace(GORSEL_SVG_TEMIZLEME_DESENI, '');
+  const acikIndeks = temiz.indexOf('[GORSEL_SVG]');
+  if (acikIndeks !== -1) temiz = temiz.substring(0, acikIndeks);
+  return temiz;
 }
 
 app.post('/quiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(15), async (req, res) => {
@@ -1026,7 +1039,7 @@ Her soruda sadece bir doğru cevap olsun. Aciklama 1-2 cümle olsun.`;
       const gorselSvg = _gorselSvgAyikla(soru.soru);
       if (gorselSvg) {
         soru.gorselSvg = gorselSvg;
-        soru.soru = soru.soru.replace(GORSEL_SVG_TEMIZLEME_DESENI, '').trim();
+        soru.soru = _gorselSvgTemizle(soru.soru).trim();
       }
     }
 
