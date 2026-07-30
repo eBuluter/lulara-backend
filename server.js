@@ -326,14 +326,26 @@ app.get('/reklam-ssv-callback', async (req, res) => {
     }
 
     const publicKey = crypto.createPublicKey(anahtar.pem);
-    const dogrulayici = crypto.createVerify('SHA256');
-    dogrulayici.update(imzalananIcerik);
     const imzaBuffer = base64UrlToBuffer(signature);
 
-    const gecerliMi = dogrulayici.verify(
-      { key: publicKey, dsaEncoding: 'ieee-p1363' },
-      imzaBuffer
-    );
+    // Google'ın imza formatı (IEEE P1363 ham mı, yoksa standart DER mi)
+    // dokümantasyona göre değişebiliyor/belirsiz olabiliyor — ikisini de
+    // deneyip HANGİSİ tutuyorsa onu kabul ediyoruz. Bu, formatla ilgili
+    // "Malformed signature" hatalarına karşı dayanıklı hale getiriyor.
+    function _imzaDogrula(encoding) {
+      try {
+        const dogrulayici = crypto.createVerify('SHA256');
+        dogrulayici.update(imzalananIcerik);
+        return encoding
+          ? dogrulayici.verify({ key: publicKey, dsaEncoding: encoding }, imzaBuffer)
+          : dogrulayici.verify(publicKey, imzaBuffer);
+      } catch (hata) {
+        console.error(`SSV imza doğrulama denemesi başarısız (${encoding || 'der'}):`, hata.message);
+        return false;
+      }
+    }
+
+    const gecerliMi = _imzaDogrula('ieee-p1363') || _imzaDogrula(null);
 
     if (!gecerliMi) {
       console.error('SSV imza doğrulaması BAŞARISIZ — sahte istek olabilir');
