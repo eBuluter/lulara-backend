@@ -743,7 +743,22 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
         ? _gorselSvgTemizle(hamCevap.substring(0, ilkEtiket)).replace(/\[ONERI:[^\]]*\]/g, '').trim()
         : '';
     } else {
-      girisCumlesi = _gorselSvgTemizle(hamCevap).replace(/\[ONERI:[^\]]*\]/g, '').trim();
+      // adimlar boşsa (örn. cevap [ADIM] ortasında kesildiyse), kalan
+      // yarım etiket parçalarını da (ADIM/TABLO) temizliyoruz — sadece
+      // GORSEL_SVG ve ONERI değil.
+      girisCumlesi = _gorselSvgTemizle(hamCevap)
+        .replace(/\[ONERI:[^\]]*\]/g, '')
+        .replace(/\[\/?ADIM\]/g, '')
+        .replace(/\[\/?TABLO\]/g, '')
+        .trim();
+    }
+
+    // SON ÇARE GÜVENLİK AĞI: cevap token limitine takılıp o kadar erken
+    // kesildi ki geriye hiç gösterilecek bir şey kalmadıysa (ne metin ne
+    // adım), kullanıcıya boş bir balon göstermek yerine dürüst bir mesaj
+    // gösteriyoruz — sessiz boşluk kafa karıştırıcı, bu değil.
+    if (girisCumlesi.trim().length === 0 && adimlar.length === 0) {
+      girisCumlesi = 'The response got cut off while generating something complex (like a detailed diagram). Please try again — maybe ask for a slightly simpler version.';
     }
 
     gunlukIstatistigiArtir('sohbetMesaji');
@@ -820,11 +835,19 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, kre
 
     if (adimlar.length > 0) {
       const ilkEtiketIndeksi = hamCevap.indexOf('[ADIM]');
-      const girisCumlesi = _gorselSvgTemizle(hamCevap.substring(0, ilkEtiketIndeksi)).replace(/\[ONERI:[^\]]*\]/g, '').trim();
+      let girisCumlesi = _gorselSvgTemizle(hamCevap.substring(0, ilkEtiketIndeksi)).replace(/\[ONERI:[^\]]*\]/g, '').trim();
       res.json({ cevap: girisCumlesi, adimlar, gorselSvg: null, oneriler, konu: konuEtiketi2, terimler: terimler2 });
     } else {
       const gorselSvg = _gorselSvgAyikla(hamCevap);
-      const temizMetin = _gorselSvgTemizle(hamCevap).replace(/\[ONERI:[^\]]*\]/g, '').trim();
+      let temizMetin = _gorselSvgTemizle(hamCevap)
+        .replace(/\[ONERI:[^\]]*\]/g, '')
+        .replace(/\[\/?ADIM\]/g, '')
+        .replace(/\[\/?TABLO\]/g, '')
+        .trim();
+      // SON ÇARE GÜVENLİK AĞI: bkz. /sohbet-stream'deki aynı mantık
+      if (temizMetin.length === 0) {
+        temizMetin = 'The response got cut off while generating something complex (like a detailed diagram). Please try again — maybe ask for a slightly simpler version.';
+      }
       res.json({ cevap: temizMetin, adimlar: null, gorselSvg, oneriler, konu: konuEtiketi2, terimler: terimler2 });
     }
   } catch (hata) {
@@ -882,7 +905,10 @@ function _adimlariAyikla(metin) {
     if (!icerik) icerik = baslik;
     const gorselSvg = _gorselSvgAyikla(icerik);
     const temizIcerik = _gorselSvgTemizle(icerik).trim();
-    adimlar.push({ baslik, icerik: temizIcerik, gorselSvg });
+    // Temizlik sonrası içerik tamamen boş kaldıysa (örn. adım SADECE
+    // kesilmiş bir SVG'ydi), boş bir kart göstermek yerine başlığı
+    // içerik olarak kullan — hiç boş kart kalmasın.
+    adimlar.push({ baslik, icerik: temizIcerik.isEmpty ? baslik : temizIcerik, gorselSvg });
   }
 
   if (adimlar.length > 0) return adimlar;
@@ -894,7 +920,10 @@ function _adimlariAyikla(metin) {
     if (!baslik || !icerik) continue;
     const gorselSvg = _gorselSvgAyikla(icerik);
     const temizIcerik = _gorselSvgTemizle(icerik).trim();
-    adimlar.push({ baslik, icerik: temizIcerik, gorselSvg });
+    // Temizlik sonrası içerik tamamen boş kaldıysa (örn. adım SADECE
+    // kesilmiş bir SVG'ydi), boş bir kart göstermek yerine başlığı
+    // içerik olarak kullan — hiç boş kart kalmasın.
+    adimlar.push({ baslik, icerik: temizIcerik.isEmpty ? baslik : temizIcerik, gorselSvg });
   }
 
   if (adimlar.length > 0) return adimlar;
@@ -907,7 +936,10 @@ function _adimlariAyikla(metin) {
     if (!baslik || !icerik) continue;
     const gorselSvg = _gorselSvgAyikla(icerik);
     const temizIcerik = _gorselSvgTemizle(icerik).trim();
-    adimlar.push({ baslik, icerik: temizIcerik, gorselSvg });
+    // Temizlik sonrası içerik tamamen boş kaldıysa (örn. adım SADECE
+    // kesilmiş bir SVG'ydi), boş bir kart göstermek yerine başlığı
+    // içerik olarak kullan — hiç boş kart kalmasın.
+    adimlar.push({ baslik, icerik: temizIcerik.isEmpty ? baslik : temizIcerik, gorselSvg });
   }
 
   return adimlar;
