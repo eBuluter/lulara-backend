@@ -641,14 +641,14 @@ async function sohbetModeliOlustur(dilKodu) {
     return genAI.getGenerativeModel({
       model: 'gemini-3.6-flash',
       cachedContent: onbellek,
-      generationConfig: { maxOutputTokens: 2048 },
+      generationConfig: { maxOutputTokens: 4096 },
     });
   }
 
   return genAI.getGenerativeModel({
     model: 'gemini-3.6-flash',
     systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimatiOlustur(appDili),
-    generationConfig: { maxOutputTokens: 2048 },
+    generationConfig: { maxOutputTokens: 4096 },
   });
 }
 
