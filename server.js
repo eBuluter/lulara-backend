@@ -507,10 +507,19 @@ Two situations where you use these tags:
 
 Never use both tags in the same response. Never use a tag for a topic you have not actually just discussed or that the student did not just ask about — the topic_name must be specific and real, never a placeholder.
 
-VISUALS:
-For coordinate geometry: [GORSEL:koordinat|noktalar=(x1,y1)|cizgi=(x1,y1)-(x2,y2)]
-For number lines: [GORSEL:sayidogrusu|nokta=5|aralik=2,8]
-Max 1 visual per response. Only when it genuinely helps.
+VISUALS — draw anything with SVG:
+When a diagram genuinely helps (geometry shapes, coordinate graphs, function curves, physics setups like forces/circuits/optics, vectors, angle diagrams, number lines, chemical structures, anything visual), draw it yourself using raw SVG, wrapped exactly like this:
+[GORSEL_SVG]<svg viewBox="0 0 300 200" xmlns="http://www.w3.org/2000/svg">...your SVG elements...</svg>[/GORSEL_SVG]
+
+Rules:
+- ALWAYS include a viewBox attribute (e.g. "0 0 300 200") sized reasonably for the content — never omit it.
+- Use only pure vector elements: <line>, <circle>, <rect>, <polygon>, <polyline>, <path>, <text>, <ellipse>. NEVER use <script>, <image>, <foreignObject>, or any external references (no xlink:href to outside URLs).
+- Color palette for consistency with the app's dark theme: use "#6C63FF" (purple) for the main shape/highlighted elements, "#EEE9FF" (near-white) for axes/gridlines/labels/secondary elements. Do NOT add a background <rect> — keep the canvas transparent, the app already places it on a dark card.
+- Text labels: use <text> with fill="#EEE9FF" and a reasonable font-size (e.g. 12-14) for coordinates, variable names, or measurements.
+- Keep it focused and readable — draw only what helps the student understand or solve the problem, not decorative extras.
+- Max 1 visual per response. Only when it genuinely helps — do not add one to every message.
+- Example (a right triangle with labeled legs):
+[GORSEL_SVG]<svg viewBox="0 0 200 160" xmlns="http://www.w3.org/2000/svg"><polygon points="20,140 180,140 20,20" fill="#6C63FF" fill-opacity="0.12" stroke="#6C63FF" stroke-width="2.5"/><text x="90" y="155" fill="#EEE9FF" font-size="13">8 cm</text><text x="4" y="85" fill="#EEE9FF" font-size="13">6 cm</text></svg>[/GORSEL_SVG]
 
 MATH FORMATTING — MANDATORY:
 The app renders math using LaTeX. ANY mathematical expression — equations, formulas, fractions, exponents, roots, Greek letters, integrals, matrices, anything beyond plain numbers — MUST be wrapped in LaTeX delimiters or it will display as broken/unreadable text to the student. This is not optional.
@@ -725,18 +734,18 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
     hamCevap = hamCevapTerimsiz;
     const adimlar = _adimlariAyikla(hamCevap);
     const oneriler = _onerileriAyikla(hamCevap);
-    const gorsel = _gorselEtiketiniAyikla(hamCevap);
+    const gorselSvg = _gorselSvgAyikla(hamCevap);
 
     let girisCumlesi = hamCevap;
     if (adimlar.length > 0) {
       const ilkEtiket = hamCevap.indexOf('[ADIM]');
       girisCumlesi = ilkEtiket > 0 ? hamCevap.substring(0, ilkEtiket).replace(/\[ONERI:[^\]]*\]/g, '').trim() : '';
     } else {
-      girisCumlesi = hamCevap.replace(/\[GORSEL:[^\]]*\]/g, '').replace(/\[ONERI:[^\]]*\]/g, '').trim();
+      girisCumlesi = hamCevap.replace(GORSEL_SVG_TEMIZLEME_DESENI, '').replace(/\[ONERI:[^\]]*\]/g, '').trim();
     }
 
     gunlukIstatistigiArtir('sohbetMesaji');
-    res.write(`data: ${JSON.stringify({ bitti: true, cevap: girisCumlesi, adimlar, gorsel, oneriler, konu: konuEtiketi, terimler })}\n\n`);
+    res.write(`data: ${JSON.stringify({ bitti: true, cevap: girisCumlesi, adimlar, gorselSvg, oneriler, konu: konuEtiketi, terimler })}\n\n`);
     res.end();
 
   } catch (hata) {
@@ -810,11 +819,11 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, kre
     if (adimlar.length > 0) {
       const ilkEtiketIndeksi = hamCevap.indexOf('[ADIM]');
       const girisCumlesi = hamCevap.substring(0, ilkEtiketIndeksi).replace(/\[ONERI:[^\]]*\]/g, '').trim();
-      res.json({ cevap: girisCumlesi, adimlar, gorsel: null, oneriler, konu: konuEtiketi2, terimler: terimler2 });
+      res.json({ cevap: girisCumlesi, adimlar, gorselSvg: null, oneriler, konu: konuEtiketi2, terimler: terimler2 });
     } else {
-      const gorsel = _gorselEtiketiniAyikla(hamCevap);
-      const temizMetin = hamCevap.replace(/\[GORSEL:[^\]]*\]/g, '').replace(/\[ONERI:[^\]]*\]/g, '').trim();
-      res.json({ cevap: temizMetin, adimlar: null, gorsel, oneriler, konu: konuEtiketi2, terimler: terimler2 });
+      const gorselSvg = _gorselSvgAyikla(hamCevap);
+      const temizMetin = hamCevap.replace(GORSEL_SVG_TEMIZLEME_DESENI, '').replace(/\[ONERI:[^\]]*\]/g, '').trim();
+      res.json({ cevap: temizMetin, adimlar: null, gorselSvg, oneriler, konu: konuEtiketi2, terimler: terimler2 });
     }
   } catch (hata) {
     console.error('Gemini API hatası:', hata);
@@ -869,9 +878,9 @@ function _adimlariAyikla(metin) {
       icerik = satirlar.slice(1).join('\n').trim() || icerikTam;
     }
     if (!icerik) icerik = baslik;
-    const gorsel = _gorselEtiketiniAyikla(icerik);
-    const temizIcerik = icerik.replace(/\[GORSEL:[^\]]*\]/g, '').trim();
-    adimlar.push({ baslik, icerik: temizIcerik, gorsel });
+    const gorselSvg = _gorselSvgAyikla(icerik);
+    const temizIcerik = icerik.replace(GORSEL_SVG_TEMIZLEME_DESENI, '').trim();
+    adimlar.push({ baslik, icerik: temizIcerik, gorselSvg });
   }
 
   if (adimlar.length > 0) return adimlar;
@@ -881,9 +890,9 @@ function _adimlariAyikla(metin) {
     const baslik = eslesme[1].trim();
     const icerik = eslesme[2].trim();
     if (!baslik || !icerik) continue;
-    const gorsel = _gorselEtiketiniAyikla(icerik);
-    const temizIcerik = icerik.replace(/\[GORSEL:[^\]]*\]/g, '').trim();
-    adimlar.push({ baslik, icerik: temizIcerik, gorsel });
+    const gorselSvg = _gorselSvgAyikla(icerik);
+    const temizIcerik = icerik.replace(GORSEL_SVG_TEMIZLEME_DESENI, '').trim();
+    adimlar.push({ baslik, icerik: temizIcerik, gorselSvg });
   }
 
   if (adimlar.length > 0) return adimlar;
@@ -894,9 +903,9 @@ function _adimlariAyikla(metin) {
     let icerik = eslesme[2].trim();
     icerik = icerik.replace(/\[\/ADIM\]\s*$/, '').trim();
     if (!baslik || !icerik) continue;
-    const gorsel = _gorselEtiketiniAyikla(icerik);
-    const temizIcerik = icerik.replace(/\[GORSEL:[^\]]*\]/g, '').trim();
-    adimlar.push({ baslik, icerik: temizIcerik, gorsel });
+    const gorselSvg = _gorselSvgAyikla(icerik);
+    const temizIcerik = icerik.replace(GORSEL_SVG_TEMIZLEME_DESENI, '').trim();
+    adimlar.push({ baslik, icerik: temizIcerik, gorselSvg });
   }
 
   return adimlar;
@@ -943,6 +952,26 @@ function _gorselEtiketiniAyikla(metin) {
   return gorselVerisi;
 }
 
+// [GORSEL_SVG]<svg ...>...</svg>[/GORSEL_SVG] etiketini ayıklar — AI'nin
+// serbestçe çizdiği ham SVG içeriğini döner (metin olarak, JSON'a çevirmeden).
+// Bulamazsa null döner. Metinden TEMİZLEMEZ — çağıran taraf ayrıca
+// .replace(GORSEL_SVG_TEMIZLEME_DESENI, '') yapmalı.
+const GORSEL_SVG_DESENI = /\[GORSEL_SVG\]([\s\S]*?)\[\/GORSEL_SVG\]/;
+const GORSEL_SVG_TEMIZLEME_DESENI = /\[GORSEL_SVG\][\s\S]*?\[\/GORSEL_SVG\]/g;
+
+function _gorselSvgAyikla(metin) {
+  if (typeof metin !== 'string') return null;
+  const eslesme = metin.match(GORSEL_SVG_DESENI);
+  if (!eslesme) return null;
+  const svg = eslesme[1].trim();
+  // Basit bir sağlık kontrolü — gerçekten bir <svg> etiketiyle başlayıp
+  // bitiyor mu, script/foreignObject/harici referans içermiyor mu.
+  // Şüpheli görünüyorsa görseli hiç göndermiyoruz (metne düşer).
+  if (!/^<svg[\s>]/.test(svg) || !svg.includes('</svg>')) return null;
+  if (/<script|foreignObject|xlink:href\s*=\s*["']https?:/i.test(svg)) return null;
+  return svg;
+}
+
 app.post('/quiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(15), async (req, res) => {
   try {
     const { konu, zorluk = 'orta', kacinilacakSorular = [], mod = 'sozel' } = req.body;
@@ -959,13 +988,12 @@ app.post('/quiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MA
 Bu bir SAYISAL/GÖRSEL sorudur (Numerical Quiz). Kurallar:
 - Soru gerçek bir hesaplama/problem çözme gerektirmeli — sözel bir tanım sorusu DEĞİL.
 - Sorudaki HER matematiksel ifade (formül, denklem, üs, kesir, birim) LaTeX ile yazılmalı: satır içi "$...$", blok "$$...$$" formatında. Örnek: "Bir cismin hızı $v = 10 \\text{ m/s}$ ise..."
-- ÖNEMLİ: Soru bir geometrik şekil (üçgen, dörtgen, çokgen), koordinat düzlemi, doğru/eğim veya sayı doğrusu ARALIĞI içeriyorsa, bunu SÖZEL olarak tarif etmek YETMEZ — mutlaka aşağıdaki etiketlerden UYGUN OLANINI "soru" metninin İÇİNE, en sona ekleyerek GERÇEKTEN ÇİZ. Öğrenci şekli görmeden çözemeyeceği bir soruda görsel etiketi atlaman ciddi bir hatadır.
-  Üçgen/dörtgen/çokgen için: [GORSEL:koordinat|poligon=(x1,y1);(x2,y2);(x3,y3)]
-  Tekil noktalar için: [GORSEL:koordinat|noktalar=(x1,y1);(x2,y2)]
-  Bir doğru/eğim için: [GORSEL:koordinat|cizgi=(x1,y1)-(x2,y2)]
-  Bunlar birlikte de kullanılabilir: [GORSEL:koordinat|poligon=(0,0);(4,0);(0,3)|noktalar=(0,0);(4,0);(0,3)]
-  Sayı doğrusu için: [GORSEL:sayidogrusu|nokta=5|aralik=2,8]
-- Sadece konu gerçekten soyut/sayısal ve görselin hiçbir katkısı olmayacaksa (örn. basit bir yüzde hesabı) etiketi atla — ama şekil/koordinat/grafik geçen HER soruda mutlaka kullan.
+- ÖNEMLİ: Soru bir geometrik şekil (üçgen, dörtgen, çember, açı), koordinat düzlemi, fonksiyon grafiği (parabol, doğru, sinüs), fizik düzeneği (kuvvet diyagramı, devre, mercek) veya sayı doğrusu ARALIĞI içeriyorsa, bunu SÖZEL olarak tarif etmek YETMEZ — mutlaka SVG ile GERÇEKTEN ÇİZ. Öğrenci şekli görmeden çözemeyeceği bir soruda görseli atlaman ciddi bir hatadır.
+- Çizim için, "soru" metninin İÇİNE, en sona şunu ekle:
+  [GORSEL_SVG]<svg viewBox="0 0 W H" xmlns="http://www.w3.org/2000/svg">...</svg>[/GORSEL_SVG]
+  Kurallar: viewBox mutlaka olsun (örn. "0 0 300 200"). Sadece <line>, <circle>, <rect>, <polygon>, <polyline>, <path>, <text>, <ellipse> kullan — script/image/foreignObject/harici link YASAK. Ana şekil/vurgu için "#6C63FF", eksen/etiket/ikincil çizgiler için "#EEE9FF" kullan. Arka plan dikdörtgeni EKLEME (şeffaf kalsın, kart zaten koyu renkte). Ölçü/koordinat/değişken etiketlerini <text fill="#EEE9FF"> ile ekle.
+  Örnek (dik üçgen): [GORSEL_SVG]<svg viewBox="0 0 200 160" xmlns="http://www.w3.org/2000/svg"><polygon points="20,140 180,140 20,20" fill="#6C63FF" fill-opacity="0.12" stroke="#6C63FF" stroke-width="2.5"/><text x="90" y="155" fill="#EEE9FF" font-size="13">8 cm</text><text x="4" y="85" fill="#EEE9FF" font-size="13">6 cm</text></svg>[/GORSEL_SVG]
+- Sadece konu gerçekten soyut/sayısal ve görselin hiçbir katkısı olmayacaksa (örn. basit bir yüzde hesabı) SVG'yi atla — ama şekil/koordinat/grafik/düzenek geçen HER soruda mutlaka kullan.
 - Cevap seçenekleri SAYISAL değerler olmalı (gerekirse birimle birlikte), sözel ifadeler değil.
 - Açıklama (aciklama), çözümün kısa adımlarını LaTeX ile göstermeli.` : '';
 
@@ -990,13 +1018,13 @@ Her soruda sadece bir doğru cevap olsun. Aciklama 1-2 cümle olsun.`;
     const text = result.response.text().replace(/```json|```/g, '').trim();
     const soru = JSON.parse(text);
 
-    // Sayısal modda soru metninin içine gömülü [GORSEL:...] etiketi varsa
+    // Sayısal modda soru metninin içine gömülü [GORSEL_SVG] içeriği varsa
     // ayıklayıp ayrı bir alan olarak döndür, görünür metinden temizle
     if (sayisalMi && typeof soru.soru === 'string') {
-      const gorsel = _gorselEtiketiniAyikla(soru.soru);
-      if (gorsel) {
-        soru.gorsel = gorsel;
-        soru.soru = soru.soru.replace(/\[GORSEL:[^\]]*\]/g, '').trim();
+      const gorselSvg = _gorselSvgAyikla(soru.soru);
+      if (gorselSvg) {
+        soru.gorselSvg = gorselSvg;
+        soru.soru = soru.soru.replace(GORSEL_SVG_TEMIZLEME_DESENI, '').trim();
       }
     }
 
