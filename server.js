@@ -739,7 +739,9 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
     let girisCumlesi = hamCevap;
     if (adimlar.length > 0) {
       const ilkEtiket = hamCevap.indexOf('[ADIM]');
-      girisCumlesi = ilkEtiket > 0 ? hamCevap.substring(0, ilkEtiket).replace(/\[ONERI:[^\]]*\]/g, '').trim() : '';
+      girisCumlesi = ilkEtiket > 0
+        ? hamCevap.substring(0, ilkEtiket).replace(GORSEL_SVG_TEMIZLEME_DESENI, '').replace(/\[ONERI:[^\]]*\]/g, '').trim()
+        : '';
     } else {
       girisCumlesi = hamCevap.replace(GORSEL_SVG_TEMIZLEME_DESENI, '').replace(/\[ONERI:[^\]]*\]/g, '').trim();
     }
@@ -818,7 +820,7 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, kre
 
     if (adimlar.length > 0) {
       const ilkEtiketIndeksi = hamCevap.indexOf('[ADIM]');
-      const girisCumlesi = hamCevap.substring(0, ilkEtiketIndeksi).replace(/\[ONERI:[^\]]*\]/g, '').trim();
+      const girisCumlesi = hamCevap.substring(0, ilkEtiketIndeksi).replace(GORSEL_SVG_TEMIZLEME_DESENI, '').replace(/\[ONERI:[^\]]*\]/g, '').trim();
       res.json({ cevap: girisCumlesi, adimlar, gorselSvg: null, oneriler, konu: konuEtiketi2, terimler: terimler2 });
     } else {
       const gorselSvg = _gorselSvgAyikla(hamCevap);
