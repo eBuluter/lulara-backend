@@ -1113,23 +1113,27 @@ SADECE JSON formatında yanıt ver:
 
 app.post('/kartlar-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(15), async (req, res) => {
   try {
-    const { konu } = req.body;
+    const { konu, dil } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
 
-    const prompt = `Sen bir ders öğretmenisin. "${konu}" konusunda 6 adet flashcard oluştur.
+    const dilAdlari = { 'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish' };
+    const appDili = dilAdlari[dil] || 'English';
 
-SADECE JSON formatında yanıt ver, başka hiçbir şey yazma:
+    const prompt = `You are a tutor. Create 6 flashcards on the topic: "${konu}"
+
+Respond ONLY in ${appDili}, in this exact JSON format, no other text:
 {
   "kartlar": [
-    {"on": "ön yüz - soru veya kavram", "arka": "arka yüz - cevap veya açıklama"},
+    {"on": "front side - a question or concept", "arka": "back side - the answer or explanation"},
     ...
   ]
 }
 
-Kurallar:
-- Her kartın ön yüzü kısa bir soru veya kavram olsun (max 15 kelime)
-- Her kartın arka yüzü net ve anlaşılır bir cevap olsun (max 30 kelime)
-- Kartlar temel kavramları kapsamalı, ezbere değil anlamaya yönelik olmalı`;
+Rules:
+- Each card's front should be a short question or concept (max 15 words)
+- Each card's back should be a clear, concise answer (max 30 words)
+- Cards should cover core concepts, aimed at understanding rather than rote memorization
+- If the topic is mathematical/scientific and a formula genuinely belongs on a card, write it in LaTeX: inline "$...$" — e.g. "$E = mc^2$". Do not force LaTeX where it is not needed.`;
 
     const result = await ucuzModel.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
