@@ -277,7 +277,7 @@ app.post('/streak-freeze-kullan', kimlikDogrula, async (req, res) => {
 
 const ADMOB_ANAHTAR_ADRESI = 'https://www.gstatic.com/admob/reward/verifier-keys.json';
 const REKLAM_ODUL_MIKTARI = 100;
-const REKLAM_GUNLUK_LIMIT = 5;
+const REKLAM_GUNLUK_LIMIT = 6;
 
 let _admobAnahtarlari = null;
 let _admobAnahtarSonCekilme = 0;
@@ -1146,7 +1146,7 @@ Rules:
   }
 });
 
-app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(1), async (req, res) => { // GEÇİCİ: Sınav Planı testi için 100'den 1'e düşürüldü — TEST BİTİNCE 100'E GERİ AL
+app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(50), async (req, res) => {
   try {
     const { konu, seviye, dil, sinavTarihi } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
