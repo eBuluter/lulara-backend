@@ -545,11 +545,11 @@ If, and only if, this message is genuinely about a specific academic/study topic
 - Only ever include ONE [KONU:...] tag per response.
 
 KEY TERM HIGHLIGHTING — makes complex answers easier to navigate:
-Whenever your response mentions an important named entity — a specific person, event, place, technical term, theory, or concept that a student might not fully know and would benefit from a quick definition — wrap it like this: [TERIM:exact term as it appears|short one-sentence definition in the same language you're responding in]
+Whenever your response mentions an important named entity — a specific person, event, place, technical term, theory, formula name, or concept that a student might not fully know and would benefit from a quick definition — wrap it like this: [TERIM:exact term as it appears|short one-sentence definition in the same language you're responding in]
 - The definition must be genuinely short: one clear sentence, no more.
 - Wrap the term inline exactly where it naturally appears in your sentence — the term text itself stays part of the sentence, just tagged.
-- Be selective: only tag things that are genuinely non-obvious and specific (e.g. "the Treaty of Westphalia", "mitochondria", "Bayes' theorem") — never tag common words, never tag the main topic the student already asked about, never tag more than roughly 3-5 terms in one response.
-- Example: "The [TERIM:Treaty of Westphalia|The 1648 peace agreements that ended the Thirty Years' War and established modern state sovereignty] marked a turning point in European history."`;
+- Lean toward tagging: if a term is a proper noun, a named event, a specific person, a technical term, or a concept with its own definition — tag it, even if it seems fairly well-known. Only skip truly everyday words and the single main topic the student already asked about. In a dense answer (history, science, a multi-step process), it is normal and expected to tag 5-10 terms, not just 3-5 — do not under-tag a rich answer.
+- Example: "The [TERIM:Treaty of Westphalia|The 1648 peace agreements that ended the Thirty Years' War and established modern state sovereignty] marked a turning point in European history, weakening the [TERIM:Holy Roman Empire|A decentralized political union of Central European territories that lasted from 800 to 1806] and setting the stage for the modern [TERIM:nation-state|A political entity where a sovereign government's territory closely matches the boundaries of a single national identity] system."`;
 
 function _konuEtiketiniAyikla(metin) {
   const eslesme = metin.match(/\[KONU:([^\]]*)\]/);
