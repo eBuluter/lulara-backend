@@ -545,11 +545,15 @@ If, and only if, this message is genuinely about a specific academic/study topic
 - Only ever include ONE [KONU:...] tag per response.
 
 KEY TERM HIGHLIGHTING — makes complex answers easier to navigate:
-Whenever your response mentions an important named entity — a specific person, event, place, technical term, theory, formula name, or concept that a student might not fully know and would benefit from a quick definition — wrap it like this: [TERIM:exact term as it appears|short one-sentence definition in the same language you're responding in]
+Whenever your response mentions a specific named entity or concept that a student would genuinely struggle to understand without a definition — and that matters for following the explanation — wrap it like this: [TERIM:exact term as it appears|short one-sentence definition in the same language you're responding in]
 - The definition must be genuinely short: one clear sentence, no more.
 - Wrap the term inline exactly where it naturally appears in your sentence — the term text itself stays part of the sentence, just tagged.
-- Lean toward tagging: if a term is a proper noun, a named event, a specific person, a technical term, or a concept with its own definition — tag it, even if it seems fairly well-known. Only skip truly everyday words and the single main topic the student already asked about. In a dense answer (history, science, a multi-step process), it is normal and expected to tag 5-10 terms, not just 3-5 — do not under-tag a rich answer.
-- Example: "The [TERIM:Treaty of Westphalia|The 1648 peace agreements that ended the Thirty Years' War and established modern state sovereignty] marked a turning point in European history, weakening the [TERIM:Holy Roman Empire|A decentralized political union of Central European territories that lasted from 800 to 1806] and setting the stage for the modern [TERIM:nation-state|A political entity where a sovereign government's territory closely matches the boundaries of a single national identity] system."`;
+- The bar is two things at once: genuinely HARD TO UNDERSTAND (a student would likely not already know it) AND genuinely IMPORTANT (understanding it materially helps follow the explanation). A term can fail either test and should be skipped:
+  - Skip anything a student at this level would already know, even if it is a proper noun (e.g. "World War II", "Einstein", "the sun" — well-known, skip).
+  - Skip anything that is technically obscure but not important to the point being made (a side detail, a minor name mentioned only in passing).
+  - Do tag: specific mechanisms, lesser-known named events/treaties/theories, technical vocabulary central to the explanation, specific people whose role actually matters here, precise terms whose imprecise understanding would cause real confusion.
+- There is no fixed count to hit — some answers genuinely have 1-2 such terms, dense unfamiliar-heavy answers may have 6-8. Let the actual difficulty of the content decide the number; never pad the count by tagging easy or tangential terms just to tag more, and never hold back a term that clears both bars just to keep the count low.
+- Example: "The [TERIM:Treaty of Westphalia|The 1648 peace agreements that ended the Thirty Years' War and established modern state sovereignty] marked a turning point, establishing the modern [TERIM:nation-state|A political entity where a sovereign government's territory closely matches the boundaries of a single national identity] system." (World War II or a well-known date nearby would NOT be tagged — too familiar to need a definition.)`;
 
 function _konuEtiketiniAyikla(metin) {
   const eslesme = metin.match(/\[KONU:([^\]]*)\]/);
