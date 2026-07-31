@@ -621,8 +621,8 @@ const ucuzModel = genAI.getGenerativeModel({
 
 const DIL_ADLARI_ONBELLEK = { en: 'English', de: 'German', fr: 'French', es: 'Spanish', tr: 'Turkish' };
 const _dilOnbellekleri = {};
-const ONBELLEK_TTL_SANIYE = 12 * 3600;
-const ONBELLEK_YENILEME_ESIGI_MS = 11.5 * 60 * 60 * 1000;
+const ONBELLEK_TTL_SANIYE = 24 * 3600; // 12'den 24'e çıkarıldı — sistem promptu sık değişmiyor, gereksiz yeniden-ödeme azalsın diye
+const ONBELLEK_YENILEME_ESIGI_MS = 23 * 60 * 60 * 1000; // TTL'den 1 saat önce tazeleriz (güvenli pay)
 
 function dilTalimatiOlustur(appDili) {
   const desteklenenler = Object.values(DIL_ADLARI_ONBELLEK).join(', ');
@@ -1235,8 +1235,12 @@ app.post('/konu-kaynaklari-bul', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSin
     const dilAdlari = { 'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish' };
     const appDili = dilAdlari[dil] || 'English';
 
+    // Bu endpoint ÜCRETSİZ (kredi almıyor) — kaliteli modele göre daha
+    // ucuz bir katmana düşürüldü. "lite" katmanına değil, "flash"e
+    // düşürdük çünkü arama (grounding) desteğinin lite'ta güvenilir
+    // çalışacağından emin değiliz; bu hâlâ 3.6-flash'ten belirgin ucuz.
     const aramaModeli = genAI.getGenerativeModel({
-      model: 'gemini-3.6-flash',
+      model: 'gemini-3.5-flash',
       tools: [{ googleSearch: {} }],
     });
 
@@ -1263,7 +1267,7 @@ app.post('/konu-kaynaklari-bul', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSin
 });
 
 let _gundemOnbellekleri = {};
-const GUNDEM_ONBELLEK_SURESI = 60 * 60 * 1000;
+const GUNDEM_ONBELLEK_SURESI = 3 * 60 * 60 * 1000; // 1 saatten 3 saate çıkarıldı — kullanıcı "Yenile"ye bassa bile önbellek tazeyse (3 saat geçmediyse) gerçek arama yapılmaz, ücretsiz aynı içerik döner
 
 function htmlVarliklariniCoz(metin) {
   if (!metin) return metin;
