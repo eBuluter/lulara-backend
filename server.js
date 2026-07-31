@@ -677,7 +677,11 @@ async function sohbetModeliOlustur(dilKodu) {
   });
 }
 
-const MAKS_GECMIS_MESAJ = 12;
+// 12'den 8'e indirildi — hâlâ 4 karşılıklı konuşma turu tutuyor (makul
+// bağlam), ama her istekte gönderilen (önbelleklenmeyen) input token
+// miktarını azaltarak maliyeti düşürüyor. ÖDÜNLEŞİM: çok uzun sohbetlerde
+// AI'nin 4 turdan daha eski bir detayı unutma ihtimali biraz artabilir.
+const MAKS_GECMIS_MESAJ = 8;
 
 app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, krediGerekli(10), async (req, res) => {
   try {
