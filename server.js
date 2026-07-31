@@ -1239,12 +1239,14 @@ app.post('/konu-kaynaklari-bul', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSin
     const dilAdlari = { 'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish' };
     const appDili = dilAdlari[dil] || 'English';
 
-    // Bu endpoint ÜCRETSİZ (kredi almıyor) — kaliteli modele göre daha
-    // ucuz bir katmana düşürüldü. "lite" katmanına değil, "flash"e
-    // düşürdük çünkü arama (grounding) desteğinin lite'ta güvenilir
-    // çalışacağından emin değiliz; bu hâlâ 3.6-flash'ten belirgin ucuz.
+    // DÜZELTME: 3.5-flash aslında 3.6-flash'ten DAHA PAHALI çıkış
+    // fiyatına sahip ($9 vs $7.50/milyon) — bunu yanlışlıkla tersine
+    // düşürmüştük. Kaliteli modelde ($6.9-flash) kalmak hem daha ucuz
+    // hem daha kaliteli. Bu endpoint yine de ücretsiz (kredisiz) kaldığı
+    // için gerçek tasarruf, konu-kaynaklari-bul'un istemci tarafında
+    // (Flutter) sadece bir kez çağrılıp önbelleklenmesinden geliyor zaten.
     const aramaModeli = genAI.getGenerativeModel({
-      model: 'gemini-3.5-flash',
+      model: 'gemini-3.6-flash',
       tools: [{ googleSearch: {} }],
     });
 
