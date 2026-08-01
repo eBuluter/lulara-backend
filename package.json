@@ -7,12 +7,13 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
     "@google/generative-ai": "^0.21.0",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
+    "express": "^4.19.2",
     "express-rate-limit": "^7.4.1",
     "firebase-admin": "^12.7.0",
-    "mammoth": "^1.8.0"
+    "mammoth": "^1.8.0",
+    "nodemailer": "^9.0.3"
   }
 }
