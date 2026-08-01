@@ -10,6 +10,7 @@ const rateLimit = require('express-rate-limit');
 const admin = require('firebase-admin');
 const crypto = require('crypto');
 const mammoth = require('mammoth');
+const nodemailer = require('nodemailer');
 const { GoogleAICacheManager } = require('@google/generative-ai/server');
 
 const app = express();
@@ -17,6 +18,19 @@ app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+// İletişim/geri bildirim mesajlarını e-postayla iletmek için — Gmail SMTP
+// kullanıyor. process.env.SMTP_EMAIL ve process.env.SMTP_APP_SIFRE, Render
+// panelinde "Environment" sekmesinden ayarlanmalı. SMTP_APP_SIFRE, Gmail
+// hesabının normal şifresi DEĞİL — Google Hesap Ayarları'ndan üretilen bir
+// "Uygulama Şifresi" (App Password) olmalı, 2 Adımlı Doğrulama gerektirir.
+const mailTasiyici = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.SMTP_EMAIL,
+    pass: process.env.SMTP_APP_SIFRE,
+  },
+});
 const cacheManager = new GoogleAICacheManager(process.env.GEMINI_API_KEY);
 
 const servisHesabiJson = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString('utf-8');
@@ -45,6 +59,7 @@ async function kimlikDogrula(req, res, next) {
   try {
     const decoded = await admin.auth().verifyIdToken(token);
     req.uid = decoded.uid;
+    req.email = decoded.email || null;
     req.misafirMi = decoded.firebase?.sign_in_provider === 'anonymous';
     next();
   } catch (e) {
@@ -1630,6 +1645,28 @@ app.post('/sayfa-analiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('s
   } catch (hata) {
     console.error('Sayfa analiz hatası:', hata);
     res.status(500).json({ hata: 'Sayfa analiz edilemedi.' });
+  }
+});
+
+app.post('/iletisim-mesaji-gonder', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('mesaj', 2000), async (req, res) => {
+  try {
+    const { mesaj } = req.body;
+    if (!mesaj || !mesaj.trim()) return res.status(400).json({ hata: 'Mesaj boş olamaz.' });
+
+    const gonderenEposta = req.email || (req.misafirMi ? 'Misafir kullanıcı' : 'E-posta yok');
+
+    await mailTasiyici.sendMail({
+      from: process.env.SMTP_EMAIL,
+      to: 'contact.buluterus@gmail.com',
+      replyTo: req.email || undefined,
+      subject: `Lulara — Yeni iletişim mesajı (${gonderenEposta})`,
+      text: `Gönderen: ${gonderenEposta}\nKullanıcı ID: ${req.uid}\n\nMesaj:\n${mesaj.trim()}`,
+    });
+
+    res.json({ basarili: true });
+  } catch (hata) {
+    console.error('İletişim mesajı gönderme hatası:', hata);
+    res.status(500).json({ hata: 'Mesaj gönderilemedi, lütfen tekrar dene.' });
   }
 });
 
