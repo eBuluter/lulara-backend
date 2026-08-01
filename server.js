@@ -528,7 +528,8 @@ Rules:
 - Use only pure vector elements: <line>, <circle>, <rect>, <polygon>, <polyline>, <path>, <text>, <ellipse>. NEVER use <script>, <image>, <foreignObject>, or any external references (no xlink:href to outside URLs).
 - Color palette for consistency with the app's dark theme: use "#6C63FF" (purple) for the main shape/highlighted elements, "#EEE9FF" (near-white) for axes/gridlines/labels/secondary elements. Do NOT add a background <rect> — keep the canvas transparent, the app already places it on a dark card.
 - Text labels: use <text> with fill="#EEE9FF" and a reasonable font-size (e.g. 12-14) for coordinates, variable names, or measurements.
-- Keep it focused and readable — draw only what helps the student understand or solve the problem, not decorative extras.
+- Keep it focused and readable — draw only what helps the student understand or solve the problem, not decorative extras. Aim for roughly 5-12 elements — a diagram this simple almost never needs more.
+- STAY COMPACT: use whole numbers or at most 1 decimal place for coordinates (e.g. "42.5" not "42.4837291"), skip attributes that aren't visually necessary, and don't repeat the same style attributes on elements that could share a simpler structure. A correct, compact SVG is just as good as a verbose one — verbosity adds no value here.
 - Max 1 visual per response. Only when it genuinely helps — do not add one to every message.
 - Example (a right triangle with labeled legs):
 [GORSEL_SVG]<svg viewBox="0 0 200 160" xmlns="http://www.w3.org/2000/svg"><polygon points="20,140 180,140 20,20" fill="#6C63FF" fill-opacity="0.12" stroke="#6C63FF" stroke-width="2.5"/><text x="90" y="155" fill="#EEE9FF" font-size="13">8 cm</text><text x="4" y="85" fill="#EEE9FF" font-size="13">6 cm</text></svg>[/GORSEL_SVG]
@@ -613,6 +614,16 @@ function ogrenciBaglamiOlustur(zayifKonular) {
 const model = genAI.getGenerativeModel({
   model: 'gemini-3.6-flash',
   systemInstruction: SISTEM_PROMPTU,
+});
+
+// Sayısal Quiz ve Öğrenme Planı gibi "chat" olmayan görevler için — aynı
+// kaliteli model, ama chat'e özel dev sistem promptu (ADIM/ONERI/KONU/
+// TERIM/SVG kuralları) OLMADAN. Bu görevlerin kendi, bağımsız talimatları
+// zaten var — chat sistem promptunu taşımak sadece gereksiz, ÖNBELLEKSİZ
+// (tam fiyattan) input token'ı demek. Aynı model kalitesini koruyoruz,
+// sadece alakasız context'i kesip maliyeti düşürüyoruz.
+const modelSistemsiz = genAI.getGenerativeModel({
+  model: 'gemini-3.6-flash',
 });
 
 const ucuzModel = genAI.getGenerativeModel({
@@ -705,11 +716,17 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
     for (const m of gecmisMesajlar) {
       const parts = [];
       if (m.metin && m.metin.trim()) parts.push({ text: m.metin });
+      // GEÇMİŞ mesajlarda (şu anki mesaj DEĞİL) fotoğraf/dosya varsa, ham
+      // veriyi HER SEFERİNDE yeniden göndermek yerine kısa bir not
+      // koyuyoruz — AI hâlâ "bir görsel/dosya paylaşılmıştı" bilgisini
+      // koruyor (bağlam kopmuyor), ama pahalı veriyi tekrar tekrar
+      // işlemiyoruz. Şu anki mesajın fotoğrafı bu döngünün DIŞINDA, ayrı
+      // işleniyor — ondan etkilenmiyor.
       if (m.fotografBase64 && m.fotografMimeTipi) {
-        parts.push({ inlineData: { mimeType: m.fotografMimeTipi, data: m.fotografBase64 } });
+        parts.push({ text: '[Image shared earlier in this conversation]' });
+      } else if (m.dosyaBase64) {
+        parts.push({ text: '[File shared earlier in this conversation]' });
       }
-      const dosyaParcasi = await dosyaEkiniPartaCevir(m);
-      if (dosyaParcasi) parts.push(dosyaParcasi);
       geminiGecmisi.push({ role: m.kullaniciMi ? 'user' : 'model', parts: parts.length > 0 ? parts : [{ text: '' }] });
     }
 
@@ -816,10 +833,10 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, kre
       const parts = [];
       if (m.metin && m.metin.trim()) parts.push({ text: m.metin });
       if (m.fotografBase64 && m.fotografMimeTipi) {
-        parts.push({ inlineData: { mimeType: m.fotografMimeTipi, data: m.fotografBase64 } });
+        parts.push({ text: '[Image shared earlier in this conversation]' });
+      } else if (m.dosyaBase64) {
+        parts.push({ text: '[File shared earlier in this conversation]' });
       }
-      const dosyaParcasi = await dosyaEkiniPartaCevir(m);
-      if (dosyaParcasi) parts.push(dosyaParcasi);
       geminiGecmisi.push({ role: m.kullaniciMi ? 'user' : 'model', parts: parts.length > 0 ? parts : [{ text: '' }] });
     }
 
@@ -1054,7 +1071,7 @@ Bu bir SAYISAL/GÖRSEL sorudur (Numerical Quiz). Kurallar:
 - ÖNEMLİ: Soru bir geometrik şekil (üçgen, dörtgen, çember, açı), koordinat düzlemi, fonksiyon grafiği (parabol, doğru, sinüs), fizik düzeneği (kuvvet diyagramı, devre, mercek) veya sayı doğrusu ARALIĞI içeriyorsa, bunu SÖZEL olarak tarif etmek YETMEZ — mutlaka SVG ile GERÇEKTEN ÇİZ. Öğrenci şekli görmeden çözemeyeceği bir soruda görseli atlaman ciddi bir hatadır.
 - Çizim için, "soru" metninin İÇİNE, en sona şunu ekle:
   [GORSEL_SVG]<svg viewBox="0 0 W H" xmlns="http://www.w3.org/2000/svg">...</svg>[/GORSEL_SVG]
-  Kurallar: viewBox mutlaka olsun (örn. "0 0 300 200"). Sadece <line>, <circle>, <rect>, <polygon>, <polyline>, <path>, <text>, <ellipse> kullan — script/image/foreignObject/harici link YASAK. Ana şekil/vurgu için "#6C63FF", eksen/etiket/ikincil çizgiler için "#EEE9FF" kullan. Arka plan dikdörtgeni EKLEME (şeffaf kalsın, kart zaten koyu renkte). Ölçü/koordinat/değişken etiketlerini <text fill="#EEE9FF"> ile ekle.
+  Kurallar: viewBox mutlaka olsun (örn. "0 0 300 200"). Sadece <line>, <circle>, <rect>, <polygon>, <polyline>, <path>, <text>, <ellipse> kullan — script/image/foreignObject/harici link YASAK. Ana şekil/vurgu için "#6C63FF", eksen/etiket/ikincil çizgiler için "#EEE9FF" kullan. Arka plan dikdörtgeni EKLEME (şeffaf kalsın, kart zaten koyu renkte). Ölçü/koordinat/değişken etiketlerini <text fill="#EEE9FF"> ile ekle. KOMPAKT tut: koordinatlarda tam sayı ya da en fazla 1 ondalık basamak kullan (örn. "42.5", "42.4837291" değil), gereksiz özniteliklerden kaçın, ~5-12 elementi geçme.
   Örnek (dik üçgen): [GORSEL_SVG]<svg viewBox="0 0 200 160" xmlns="http://www.w3.org/2000/svg"><polygon points="20,140 180,140 20,20" fill="#6C63FF" fill-opacity="0.12" stroke="#6C63FF" stroke-width="2.5"/><text x="90" y="155" fill="#EEE9FF" font-size="13">8 cm</text><text x="4" y="85" fill="#EEE9FF" font-size="13">6 cm</text></svg>[/GORSEL_SVG]
 - Sadece konu gerçekten soyut/sayısal ve görselin hiçbir katkısı olmayacaksa (örn. basit bir yüzde hesabı) SVG'yi atla — ama şekil/koordinat/grafik/düzenek geçen HER soruda mutlaka kullan.
 - Cevap seçenekleri SAYISAL değerler olmalı (gerekirse birimle birlikte), sözel ifadeler değil.
@@ -1076,7 +1093,7 @@ Her soruda sadece bir doğru cevap olsun. Aciklama 1-2 cümle olsun.`;
     // Sayısal/görsel sorularda doğruluk (formül/hesap hatası olmaması) çok
     // daha kritik — kaliteli ana modeli kullanıyoruz. Sözel sorularda
     // ucuz model yeterli, maliyeti değiştirmiyoruz.
-    const kullanilacakModel = sayisalMi ? model : ucuzModel;
+    const kullanilacakModel = sayisalMi ? modelSistemsiz : ucuzModel;
     const result = await kullanilacakModel.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
     const soru = JSON.parse(text);
@@ -1220,7 +1237,7 @@ Rules:
 - Titles must be specific and concrete, never vague (bad: "Basics", good: "Verb conjugation in present tense").
 - Match the depth to the student's stated level — do not include topics they already know if level is "ileri", and do not skip fundamentals if level is "dusuk".`;
 
-    const result = await model.generateContent(prompt);
+    const result = await modelSistemsiz.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
     const veri = JSON.parse(text);
     gunlukIstatistigiArtir('ogrenmePlani');
