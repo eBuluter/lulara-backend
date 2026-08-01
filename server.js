@@ -1648,6 +1648,37 @@ app.post('/iletisim-mesaji-gonder', aiIstekSiniri, kimlikDogrula, alanUzunlugunu
     const { mesaj } = req.body;
     if (!mesaj || !mesaj.trim()) return res.status(400).json({ hata: 'Mesaj boş olamaz.' });
 
+    // Spam/kötüye kullanımı önlemek için: kullanıcı başına günde en fazla
+    // 2 iletişim mesajı — reklam ödülü sayacıyla aynı desen (Firestore
+    // transaction + gün değişince otomatik sıfırlama).
+    const ILETISIM_GUNLUK_LIMIT = 2;
+    const bugun = new Date();
+    const bugunStr = `${bugun.getFullYear()}-${bugun.getMonth() + 1}-${bugun.getDate()}`;
+    const kullaniciRef = db.collection('kullanicilar').doc(String(req.uid));
+
+    let limitAsildiMi = false;
+    await db.runTransaction(async (t) => {
+      const dok = await t.get(kullaniciRef);
+      let veri = dok.exists ? dok.data() : {};
+
+      if (veri.iletisimGunu !== bugunStr) {
+        veri.iletisimGunu = bugunStr;
+        veri.iletisimSayisi = 0;
+      }
+
+      if ((veri.iletisimSayisi || 0) >= ILETISIM_GUNLUK_LIMIT) {
+        limitAsildiMi = true;
+        return;
+      }
+
+      veri.iletisimSayisi = (veri.iletisimSayisi || 0) + 1;
+      t.set(kullaniciRef, veri, { merge: true });
+    });
+
+    if (limitAsildiMi) {
+      return res.status(429).json({ hata: 'Daily message limit reached. Please try again tomorrow.' });
+    }
+
     const gonderenEposta = req.email || (req.misafirMi ? 'Misafir kullanıcı' : 'E-posta yok');
 
     const { error } = await resend.emails.send({
