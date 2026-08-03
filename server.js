@@ -1643,6 +1643,27 @@ app.post('/sayfa-analiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('s
   }
 });
 
+// Kullanıcının hesabını ve TÜM verilerini kalıcı olarak siler — hem
+// Firestore'daki ilerleme/kredi verisini hem Firebase Authentication
+// hesabının kendisini. Bu işlem GERİ ALINAMAZ.
+app.post('/hesabimi-sil', aiIstekSiniri, kimlikDogrula, async (req, res) => {
+  try {
+    const uid = req.uid;
+
+    // Firestore'daki kullanıcı belgesini sil (kredi, ilerleme, streak vb.)
+    await db.collection('kullanicilar').doc(String(uid)).delete();
+
+    // Firebase Authentication hesabının kendisini sil — bu, kullanıcının
+    // artık hiçbir şekilde giriş yapamayacağı anlamına gelir
+    await admin.auth().deleteUser(uid);
+
+    res.json({ basarili: true });
+  } catch (hata) {
+    console.error('Hesap silme hatası:', hata);
+    res.status(500).json({ hata: 'Hesap silinemedi, lütfen tekrar dene.' });
+  }
+});
+
 app.post('/iletisim-mesaji-gonder', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('mesaj', 2000), async (req, res) => {
   try {
     const { mesaj } = req.body;
