@@ -11,6 +11,7 @@ const admin = require('firebase-admin');
 const crypto = require('crypto');
 const mammoth = require('mammoth');
 const { Resend } = require('resend');
+const { google } = require('googleapis');
 const { GoogleAICacheManager } = require('@google/generative-ai/server');
 
 const app = express();
@@ -1646,6 +1647,89 @@ app.post('/sayfa-analiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('s
 // Kullanıcının hesabını ve TÜM verilerini kalıcı olarak siler — hem
 // Firestore'daki ilerleme/kredi verisini hem Firebase Authentication
 // hesabının kendisini. Bu işlem GERİ ALINAMAZ.
+// ---------------------------------------------------------
+// SATIN ALMA DOĞRULAMA — Google Play Billing için. Bu endpoint'in TAM
+// olarak çalışması için henüz eksik bir kurulum var:
+//   1. Play Console → Setup → API access → bir "service account" oluştur
+//   2. O servis hesabına Play Console'da "Finance" (ya da tam yetki) izni ver
+//   3. Google Cloud Console'dan o servis hesabı için bir JSON anahtar indir
+//   4. O JSON'ın İÇERİĞİNİ (tamamını, tek satır string olarak) Render'da
+//      GOOGLE_PLAY_SERVICE_ACCOUNT_JSON ortam değişkenine yapıştır
+// Bu adımlar tamamlanana kadar, bu endpoint hata verecektir — ama Flutter
+// tarafı zaten buna hazır, kurulum bitince ekstra kod değişikliği
+// GEREKMEZ.
+// ---------------------------------------------------------
+const PAKET_ADI = 'com.lulara.app';
+const URUN_PREMIUM_AYLIK = 'lulara_premium_monthly';
+const URUN_KREDI_MIKTARLARI = { 'lulara_credits_500': 500, 'lulara_credits_1000': 1000 };
+
+async function playYayinciApisi() {
+  const kimlikJson = process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON;
+  if (!kimlikJson) throw new Error('GOOGLE_PLAY_SERVICE_ACCOUNT_JSON ortam değişkeni ayarlanmamış.');
+  const auth = new google.auth.GoogleAuth({
+    credentials: JSON.parse(kimlikJson),
+    scopes: ['https://www.googleapis.com/auth/androidpublisher'],
+  });
+  return google.androidpublisher({ version: 'v3', auth });
+}
+
+app.post('/satin-alma-dogrula', aiIstekSiniri, kimlikDogrula, async (req, res) => {
+  try {
+    const { urunId, satinAlmaTokeni } = req.body;
+    if (!urunId || !satinAlmaTokeni) return res.status(400).json({ hata: 'Eksik bilgi.' });
+
+    const yayinciApi = await playYayinciApisi();
+    const kullaniciRef = db.collection('kullanicilar').doc(String(req.uid));
+
+    if (urunId === URUN_PREMIUM_AYLIK) {
+      // ── ABONELİK DOĞRULAMASI ──
+      const sonuc = await yayinciApi.purchases.subscriptions.get({
+        packageName: PAKET_ADI,
+        subscriptionId: urunId,
+        token: satinAlmaTokeni,
+      });
+      // paymentState: 1 = ödendi, 2 = deneme süresinde bekliyor
+      const gecerliMi = sonuc.data.paymentState === 1 || sonuc.data.paymentState === 2;
+      if (!gecerliMi) return res.status(400).json({ hata: 'Abonelik geçerli değil.' });
+
+      await kullaniciRef.set({ premium: true, premiumSonKontrol: Date.now() }, { merge: true });
+    } else if (URUN_KREDI_MIKTARLARI[urunId]) {
+      // ── TÜKETİLEBİLİR ÜRÜN (KREDİ PAKETİ) DOĞRULAMASI ──
+      const sonuc = await yayinciApi.purchases.products.get({
+        packageName: PAKET_ADI,
+        productId: urunId,
+        token: satinAlmaTokeni,
+      });
+      // purchaseState: 0 = satın alındı
+      if (sonuc.data.purchaseState !== 0) return res.status(400).json({ hata: 'Satın alma geçerli değil.' });
+
+      const eklenecekKredi = URUN_KREDI_MIKTARLARI[urunId];
+      await db.runTransaction(async (t) => {
+        const dok = await t.get(kullaniciRef);
+        const veri = dok.exists ? dok.data() : {};
+        veri.kredi = (veri.kredi || 0) + eklenecekKredi;
+        t.set(kullaniciRef, veri, { merge: true });
+      });
+
+      // Google'a bu ürünün "tüketildiğini" (kullanıldığını) bildir —
+      // yoksa kullanıcı aynı satın almayı tekrar restore edemez/Google
+      // bunu "beklemede" tutar
+      await yayinciApi.purchases.products.consume({
+        packageName: PAKET_ADI,
+        productId: urunId,
+        token: satinAlmaTokeni,
+      });
+    } else {
+      return res.status(400).json({ hata: 'Bilinmeyen ürün.' });
+    }
+
+    res.json({ basarili: true });
+  } catch (hata) {
+    console.error('Satın alma doğrulama hatası:', hata);
+    res.status(500).json({ hata: 'Doğrulama başarısız, lütfen tekrar dene.' });
+  }
+});
+
 app.post('/hesabimi-sil', aiIstekSiniri, kimlikDogrula, async (req, res) => {
   try {
     const uid = req.uid;

@@ -13,6 +13,7 @@
     "express": "^4.19.2",
     "express-rate-limit": "^7.4.1",
     "firebase-admin": "^12.7.0",
+    "googleapis": "^174.0.0",
     "mammoth": "^1.8.0",
     "resend": "^6.18.1"
   }
