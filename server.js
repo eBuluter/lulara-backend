@@ -1661,7 +1661,12 @@ app.post('/sayfa-analiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('s
 // ---------------------------------------------------------
 const PAKET_ADI = 'com.lulara.app';
 const URUN_PREMIUM_AYLIK = 'lulara_premium_monthly';
-const URUN_KREDI_MIKTARLARI = { 'lulara_credits_500': 500, 'lulara_credits_1000': 1000 };
+const URUN_KREDI_MIKTARLARI = {
+  'lulara_credits_250': 250,
+  'lulara_credits_500': 500,
+  'lulara_credits_1000': 1000,
+  'lulara_credits_2500': 2500,
+};
 
 async function playYayinciApisi() {
   const kimlikJson = process.env.GOOGLE_PLAY_SERVICE_ACCOUNT_JSON;
