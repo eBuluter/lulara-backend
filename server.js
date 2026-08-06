@@ -1190,7 +1190,7 @@ Rules:
   }
 });
 
-app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(50), async (req, res) => {
+app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(1) /* GEÇİCİ TEST — normalde 50 */, async (req, res) => {
   try {
     const { konu, seviye, dil, sinavTarihi } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
@@ -1239,14 +1239,15 @@ Respond ONLY in ${appDili}, in this exact JSON format, no other text:
 {
   ${kalanGun !== null ? '"uyari": "warning message described above, or empty string if time is ample",' : ''}
   "maddeler": [
-    {"baslik": "short sub-topic name (3-6 words)", "aciklama": "1 short sentence explaining why this comes at this point in the sequence"${ekstraAlanlar}}
+    {"baslik": "short sub-topic name (3-6 words)", "aciklama": "1 short sentence explaining why this comes at this point in the sequence", "alanTuru": "sayisal" or "sozel"${ekstraAlanlar}}
   ]
 }
 
 Rules:
 - Order matters — each sub-topic should build on the previous ones.
 - Titles must be specific and concrete, never vague (bad: "Basics", good: "Verb conjugation in present tense").
-- Match the depth to the student's stated level — do not include topics they already know if level is "ileri", and do not skip fundamentals if level is "dusuk".`;
+- Match the depth to the student's stated level — do not include topics they already know if level is "ileri", and do not skip fundamentals if level is "dusuk".
+- "alanTuru": classify each sub-topic as "sayisal" (numerical/quantitative — math, physics, chemistry calculations, or anything where diagrams/formulas/step-by-step problem-solving are the natural way to practice) or "sozel" (verbal/conceptual — language, history, literature, definitions, or anything better practiced through explanation and recall rather than calculation). This determines which quiz mode the student gets for practice, so classify based on how the topic is actually PRACTICED, not just its general subject area (e.g. "History of calculus" is sozel even though it's about math).`;
 
     const result = await modelSistemsiz.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
@@ -1278,19 +1279,21 @@ app.post('/konu-kaynaklari-bul', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSin
       tools: [{ googleSearch: {} }],
     });
 
-    const prompt = `Search the web for the 3 best educational resources (articles, tutorials, or reference pages — not videos) that clearly explain: "${konu}". Prefer reputable, well-known educational sources.`;
+    const prompt = `Search the web for the 3 best educational resources (articles, tutorials, or reference pages — not videos) that clearly explain: "${konu}". Prefer reputable, well-known educational sources. Respond ONLY in ${appDili}, in this exact JSON format, no other text:
+{
+  "kaynaklar": [
+    {"baslik": "short source title", "url": "https://..."}
+  ]
+}
+Max 3 sources. Only include real, working URLs you found via search — never invent one.`;
     const result = await aramaModeli.generateContent(prompt);
-    const grounding = result.response.candidates?.[0]?.groundingMetadata;
-    const chunks = grounding?.groundingChunks || [];
-
-    const gorulenUrller = new Set();
-    const kaynaklar = [];
-    for (const c of chunks) {
-      const web = c.web;
-      if (!web || !web.uri || gorulenUrller.has(web.uri)) continue;
-      gorulenUrller.add(web.uri);
-      kaynaklar.push({ baslik: (web.title || 'Web').trim(), url: web.uri });
-      if (kaynaklar.length >= 3) break;
+    const text = result.response.text().replace(/```json|```/g, '').trim();
+    let kaynaklar = [];
+    try {
+      const veri = JSON.parse(text);
+      kaynaklar = (veri.kaynaklar || []).slice(0, 3);
+    } catch (ayristirmaHatasi) {
+      console.error('Kaynak JSON ayrıştırma hatası:', ayristirmaHatasi, '— ham metin:', text);
     }
 
     res.json({ kaynaklar });
