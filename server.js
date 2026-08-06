@@ -1288,6 +1288,7 @@ app.post('/konu-kaynaklari-bul', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSin
 Max 3 sources. Only include real, working URLs you found via search — never invent one.`;
     const result = await aramaModeli.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
+    console.log('GEÇİCİ TEŞHİS — /konu-kaynaklari-bul ham cevap:', text); // TODO: sorun çözülünce kaldır
     let kaynaklar = [];
     try {
       const veri = JSON.parse(text);
