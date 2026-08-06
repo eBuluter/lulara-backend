@@ -1563,7 +1563,7 @@ Keep titles short (under 12 words).`;
 const _arastirmaOnbellek = new Map();
 const ARASTIRMA_ONBELLEK_SURESI = 60 * 60 * 1000;
 
-app.post('/arastir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), async (req, res) => {
+app.post('/arastir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(25), async (req, res) => {
   try {
     const { konu, dil } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
