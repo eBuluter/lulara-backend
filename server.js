@@ -20,12 +20,6 @@ const PORT = process.env.PORT || 3000;
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// İletişim/geri bildirim mesajlarını e-postayla iletmek için — Resend
-// kullanıyor (Render'ın ücretsiz planı doğrudan SMTP bağlantılarını
-// engellediği için Nodemailer/Gmail SMTP çalışmıyordu; Resend, HTTPS
-// üzerinden çalışan bir API olduğu için bu engele takılmıyor).
-// process.env.RESEND_API_KEY, Render panelinde "Environment" sekmesinden
-// ayarlanmalı — resend.com'dan alınan API anahtarı.
 const resend = new Resend(process.env.RESEND_API_KEY);
 const cacheManager = new GoogleAICacheManager(process.env.GEMINI_API_KEY);
 
@@ -339,10 +333,6 @@ app.get('/reklam-ssv-callback', async (req, res) => {
     const publicKey = crypto.createPublicKey(anahtar.pem);
     const imzaBuffer = base64UrlToBuffer(signature);
 
-    // Google'ın imza formatı (IEEE P1363 ham mı, yoksa standart DER mi)
-    // dokümantasyona göre değişebiliyor/belirsiz olabiliyor — ikisini de
-    // deneyip HANGİSİ tutuyorsa onu kabul ediyoruz. Bu, formatla ilgili
-    // "Malformed signature" hatalarına karşı dayanıklı hale getiriyor.
     function _imzaDogrula(encoding) {
       try {
         const dogrulayici = crypto.createVerify('SHA256');
@@ -593,11 +583,6 @@ function _konuEtiketiniAyikla(metin) {
   return eslesme ? eslesme[1].trim() : null;
 }
 
-// [TERIM:terim|özet] etiketlerini ayıklar VE metinden temizler — geriye
-// { temizMetin, terimler } döner. temizMetin'de etiketler kaybolur ama
-// terimin kendisi (düz metin olarak) yerinde kalır — Flutter tarafı bu
-// düz metni, terimler listesindeki eşleşen terimle bulup tıklanabilir
-// hâle getirecek.
 function _terimleriAyikla(metin) {
   const terimler = [];
   const desen = /\[TERIM:([^|\]]+)\|([^\]]+)\]/g;
@@ -622,29 +607,33 @@ function ogrenciBaglamiOlustur(zayifKonular) {
   return `\n\nSTUDENT CONTEXT: This student has been struggling with these topics recently: ${temizKonular.join(', ')}.`;
 }
 
+// Tüm modellerde makul bir çıkış token tavanı — kaçak/aşırı uzun
+// üretimlere karşı güvenlik ağı. Sohbet dışındaki görevler (quiz/kart/
+// plan/araştırma) yapısal JSON döndürdüğü için normalde kısa kalıyor,
+// ama bir sınır olmaması, nadir bir durumda maliyetin kontrolsüz
+// artmasına izin verirdi.
+const YAPISAL_GOREV_TOKEN_TAVANI = 2048;
+const ARASTIRMA_TOKEN_TAVANI = 4096;
+
 const model = genAI.getGenerativeModel({
   model: 'gemini-3.6-flash',
   systemInstruction: SISTEM_PROMPTU,
 });
 
-// Sayısal Quiz ve Öğrenme Planı gibi "chat" olmayan görevler için — aynı
-// kaliteli model, ama chat'e özel dev sistem promptu (ADIM/ONERI/KONU/
-// TERIM/SVG kuralları) OLMADAN. Bu görevlerin kendi, bağımsız talimatları
-// zaten var — chat sistem promptunu taşımak sadece gereksiz, ÖNBELLEKSİZ
-// (tam fiyattan) input token'ı demek. Aynı model kalitesini koruyoruz,
-// sadece alakasız context'i kesip maliyeti düşürüyoruz.
 const modelSistemsiz = genAI.getGenerativeModel({
   model: 'gemini-3.6-flash',
+  generationConfig: { maxOutputTokens: ARASTIRMA_TOKEN_TAVANI },
 });
 
 const ucuzModel = genAI.getGenerativeModel({
   model: 'gemini-3.5-flash-lite',
+  generationConfig: { maxOutputTokens: YAPISAL_GOREV_TOKEN_TAVANI },
 });
 
 const DIL_ADLARI_ONBELLEK = { en: 'English', de: 'German', fr: 'French', es: 'Spanish', tr: 'Turkish' };
 const _dilOnbellekleri = {};
-const ONBELLEK_TTL_SANIYE = 24 * 3600; // 12'den 24'e çıkarıldı — sistem promptu sık değişmiyor, gereksiz yeniden-ödeme azalsın diye
-const ONBELLEK_YENILEME_ESIGI_MS = 23 * 60 * 60 * 1000; // TTL'den 1 saat önce tazeleriz (güvenli pay)
+const ONBELLEK_TTL_SANIYE = 24 * 3600;
+const ONBELLEK_YENILEME_ESIGI_MS = 23 * 60 * 60 * 1000;
 
 function dilTalimatiOlustur(appDili) {
   const desteklenenler = Object.values(DIL_ADLARI_ONBELLEK).join(', ');
@@ -699,10 +688,6 @@ async function sohbetModeliOlustur(dilKodu) {
   });
 }
 
-// 12'den 8'e indirildi — hâlâ 4 karşılıklı konuşma turu tutuyor (makul
-// bağlam), ama her istekte gönderilen (önbelleklenmeyen) input token
-// miktarını azaltarak maliyeti düşürüyor. ÖDÜNLEŞİM: çok uzun sohbetlerde
-// AI'nin 4 turdan daha eski bir detayı unutma ihtimali biraz artabilir.
 const MAKS_GECMIS_MESAJ = 8;
 
 app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, krediGerekli(10), async (req, res) => {
@@ -727,12 +712,6 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
     for (const m of gecmisMesajlar) {
       const parts = [];
       if (m.metin && m.metin.trim()) parts.push({ text: m.metin });
-      // GEÇMİŞ mesajlarda (şu anki mesaj DEĞİL) fotoğraf/dosya varsa, ham
-      // veriyi HER SEFERİNDE yeniden göndermek yerine kısa bir not
-      // koyuyoruz — AI hâlâ "bir görsel/dosya paylaşılmıştı" bilgisini
-      // koruyor (bağlam kopmuyor), ama pahalı veriyi tekrar tekrar
-      // işlemiyoruz. Şu anki mesajın fotoğrafı bu döngünün DIŞINDA, ayrı
-      // işleniyor — ondan etkilenmiyor.
       if (m.fotografBase64 && m.fotografMimeTipi) {
         parts.push({ text: '[Image shared earlier in this conversation]' });
       } else if (m.dosyaBase64) {
@@ -787,9 +766,6 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
         ? _gorselSvgTemizle(hamCevap.substring(0, ilkEtiket)).replace(/\[ONERI:[^\]]*\]/g, '').trim()
         : '';
     } else {
-      // adimlar boşsa (örn. cevap [ADIM] ortasında kesildiyse), kalan
-      // yarım etiket parçalarını da (ADIM/TABLO) temizliyoruz — sadece
-      // GORSEL_SVG ve ONERI değil.
       girisCumlesi = _gorselSvgTemizle(hamCevap)
         .replace(/\[ONERI:[^\]]*\]/g, '')
         .replace(/\[\/?ADIM\]/g, '')
@@ -797,10 +773,6 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
         .trim();
     }
 
-    // SON ÇARE GÜVENLİK AĞI: cevap token limitine takılıp o kadar erken
-    // kesildi ki geriye hiç gösterilecek bir şey kalmadıysa (ne metin ne
-    // adım), kullanıcıya boş bir balon göstermek yerine dürüst bir mesaj
-    // gösteriyoruz — sessiz boşluk kafa karıştırıcı, bu değil.
     if (girisCumlesi.trim().length === 0 && adimlar.length === 0) {
       girisCumlesi = 'The response got cut off while generating something complex (like a detailed diagram). Please try again — maybe ask for a slightly simpler version.';
     }
@@ -888,7 +860,6 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, kre
         .replace(/\[\/?ADIM\]/g, '')
         .replace(/\[\/?TABLO\]/g, '')
         .trim();
-      // SON ÇARE GÜVENLİK AĞI: bkz. /sohbet-stream'deki aynı mantık
       if (temizMetin.length === 0) {
         temizMetin = 'The response got cut off while generating something complex (like a detailed diagram). Please try again — maybe ask for a slightly simpler version.';
       }
@@ -949,9 +920,6 @@ function _adimlariAyikla(metin) {
     if (!icerik) icerik = baslik;
     const gorselSvg = _gorselSvgAyikla(icerik);
     const temizIcerik = _gorselSvgTemizle(icerik).trim();
-    // Temizlik sonrası içerik tamamen boş kaldıysa (örn. adım SADECE
-    // kesilmiş bir SVG'ydi), boş bir kart göstermek yerine başlığı
-    // içerik olarak kullan — hiç boş kart kalmasın.
     adimlar.push({ baslik, icerik: temizIcerik.isEmpty ? baslik : temizIcerik, gorselSvg });
   }
 
@@ -964,9 +932,6 @@ function _adimlariAyikla(metin) {
     if (!baslik || !icerik) continue;
     const gorselSvg = _gorselSvgAyikla(icerik);
     const temizIcerik = _gorselSvgTemizle(icerik).trim();
-    // Temizlik sonrası içerik tamamen boş kaldıysa (örn. adım SADECE
-    // kesilmiş bir SVG'ydi), boş bir kart göstermek yerine başlığı
-    // içerik olarak kullan — hiç boş kart kalmasın.
     adimlar.push({ baslik, icerik: temizIcerik.isEmpty ? baslik : temizIcerik, gorselSvg });
   }
 
@@ -980,9 +945,6 @@ function _adimlariAyikla(metin) {
     if (!baslik || !icerik) continue;
     const gorselSvg = _gorselSvgAyikla(icerik);
     const temizIcerik = _gorselSvgTemizle(icerik).trim();
-    // Temizlik sonrası içerik tamamen boş kaldıysa (örn. adım SADECE
-    // kesilmiş bir SVG'ydi), boş bir kart göstermek yerine başlığı
-    // içerik olarak kullan — hiç boş kart kalmasın.
     adimlar.push({ baslik, icerik: temizIcerik.isEmpty ? baslik : temizIcerik, gorselSvg });
   }
 
@@ -1014,8 +976,6 @@ function _gorselEtiketiniAyikla(metin) {
         return [x, y];
       });
     } else if (anahtar === 'poligon') {
-      // Üçgen, dörtgen gibi kapalı şekiller — noktalar sırayla birleştirilip
-      // son noktadan ilk noktaya geri dönen bir çizgiyle kapatılır
       gorselVerisi.poligon = deger.split(';').map((nokta) => {
         const [x, y] = nokta.replace(/[()]/g, '').split(',').map(Number);
         return [x, y];
@@ -1030,10 +990,6 @@ function _gorselEtiketiniAyikla(metin) {
   return gorselVerisi;
 }
 
-// [GORSEL_SVG]<svg ...>...</svg>[/GORSEL_SVG] etiketini ayıklar — AI'nin
-// serbestçe çizdiği ham SVG içeriğini döner (metin olarak, JSON'a çevirmeden).
-// Bulamazsa null döner. Metinden TEMİZLEMEZ — çağıran taraf ayrıca
-// _gorselSvgTemizle(...) çağırmalı.
 const GORSEL_SVG_DESENI = /\[GORSEL_SVG\]([\s\S]*?)\[\/GORSEL_SVG\]/;
 const GORSEL_SVG_TEMIZLEME_DESENI = /\[GORSEL_SVG\][\s\S]*?\[\/GORSEL_SVG\]/g;
 
@@ -1042,19 +998,11 @@ function _gorselSvgAyikla(metin) {
   const eslesme = metin.match(GORSEL_SVG_DESENI);
   if (!eslesme) return null;
   const svg = eslesme[1].trim();
-  // Basit bir sağlık kontrolü — gerçekten bir <svg> etiketiyle başlayıp
-  // bitiyor mu, script/foreignObject/harici referans içermiyor mu.
-  // Şüpheli görünüyorsa görseli hiç göndermiyoruz (metne düşer).
   if (!/^<svg[\s>]/.test(svg) || !svg.includes('</svg>')) return null;
   if (/<script|foreignObject|xlink:href\s*=\s*["']https?:/i.test(svg)) return null;
   return svg;
 }
 
-// [GORSEL_SVG]...[/GORSEL_SVG] bloğunu metinden GÜVENLİ şekilde temizler.
-// Normal (kapanmış) blokları siler. EK GÜVENLİK AĞI: cevap token limitine
-// takılıp SVG tam ortasında kesilmişse (kapanış etiketi hiç gelmemişse),
-// açık etiketten itibaren HER ŞEYİ keser — yoksa yarım kalmış ham SVG
-// kodu kullanıcıya kalıcı olarak sızar.
 function _gorselSvgTemizle(metin) {
   if (typeof metin !== 'string') return metin;
   let temiz = metin.replace(GORSEL_SVG_TEMIZLEME_DESENI, '');
@@ -1101,16 +1049,11 @@ SADECE JSON formatında yanıt ver, başka hiçbir şey yazma:
 Eğer açık uçlu soru tercih edersen secenekler dizisini boş bırak: "secenekler": []
 Her soruda sadece bir doğru cevap olsun. Aciklama 1-2 cümle olsun.`;
 
-    // Sayısal/görsel sorularda doğruluk (formül/hesap hatası olmaması) çok
-    // daha kritik — kaliteli ana modeli kullanıyoruz. Sözel sorularda
-    // ucuz model yeterli, maliyeti değiştirmiyoruz.
     const kullanilacakModel = sayisalMi ? modelSistemsiz : ucuzModel;
     const result = await kullanilacakModel.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
     const soru = JSON.parse(text);
 
-    // Sayısal modda soru metninin içine gömülü [GORSEL_SVG] içeriği varsa
-    // ayıklayıp ayrı bir alan olarak döndür, görünür metinden temizle
     if (sayisalMi && typeof soru.soru === 'string') {
       const gorselSvg = _gorselSvgAyikla(soru.soru);
       if (gorselSvg) {
@@ -1190,7 +1133,7 @@ Rules:
   }
 });
 
-app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(1) /* GEÇİCİ TEST — normalde 50 */, async (req, res) => {
+app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(50), async (req, res) => {
   try {
     const { konu, seviye, dil, sinavTarihi } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
@@ -1260,7 +1203,13 @@ Rules:
   }
 });
 
-app.post('/konu-kaynaklari-bul', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), async (req, res) => {
+// DÜZELTME: bu endpoint eskiden hiç kredi almıyordu — pahalı, arama
+// destekli bir model kullandığı ve bir plan birden çok alt konu
+// içerebildiği (kullanıcı her biri için "Kaynakları göster"e basabildiği)
+// için, teorik olarak sınırsız ücretsiz kullanım anlamına geliyordu.
+// Şimdi küçük bir kredi (10) alıyor — /arastir'dan (25) daha ucuz, çünkü
+// çıktısı daha kısa (sadece 3 kaynak, özet/soru yok).
+app.post('/konu-kaynaklari-bul', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(10), async (req, res) => {
   try {
     const { konu, dil } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
@@ -1268,15 +1217,10 @@ app.post('/konu-kaynaklari-bul', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSin
     const dilAdlari = { 'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish' };
     const appDili = dilAdlari[dil] || 'English';
 
-    // DÜZELTME: 3.5-flash aslında 3.6-flash'ten DAHA PAHALI çıkış
-    // fiyatına sahip ($9 vs $7.50/milyon) — bunu yanlışlıkla tersine
-    // düşürmüştük. Kaliteli modelde ($6.9-flash) kalmak hem daha ucuz
-    // hem daha kaliteli. Bu endpoint yine de ücretsiz (kredisiz) kaldığı
-    // için gerçek tasarruf, konu-kaynaklari-bul'un istemci tarafında
-    // (Flutter) sadece bir kez çağrılıp önbelleklenmesinden geliyor zaten.
     const aramaModeli = genAI.getGenerativeModel({
       model: 'gemini-3.6-flash',
       tools: [{ googleSearch: {} }],
+      generationConfig: { maxOutputTokens: YAPISAL_GOREV_TOKEN_TAVANI },
     });
 
     const prompt = `Search the web for the 3 best educational resources (articles, tutorials, or reference pages — not videos) that clearly explain: "${konu}". Prefer reputable, well-known educational sources. Respond ONLY in ${appDili}, in this exact JSON format, no other text:
@@ -1304,7 +1248,7 @@ Max 3 sources. Only include real, working URLs you found via search — never in
 });
 
 let _gundemOnbellekleri = {};
-const GUNDEM_ONBELLEK_SURESI = 3 * 60 * 60 * 1000; // 1 saatten 3 saate çıkarıldı — kullanıcı "Yenile"ye bassa bile önbellek tazeyse (3 saat geçmediyse) gerçek arama yapılmaz, ücretsiz aynı içerik döner
+const GUNDEM_ONBELLEK_SURESI = 3 * 60 * 60 * 1000;
 
 function htmlVarliklariniCoz(metin) {
   if (!metin) return metin;
@@ -1563,7 +1507,7 @@ Keep titles short (under 12 words).`;
 const _arastirmaOnbellek = new Map();
 const ARASTIRMA_ONBELLEK_SURESI = 60 * 60 * 1000;
 
-app.post('/arastir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(25), async (req, res) => {
+app.post('/arastir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), async (req, res) => {
   try {
     const { konu, dil } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
@@ -1647,9 +1591,6 @@ app.post('/sayfa-analiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('s
   }
 });
 
-// Kullanıcının hesabını ve TÜM verilerini kalıcı olarak siler — hem
-// Firestore'daki ilerleme/kredi verisini hem Firebase Authentication
-// hesabının kendisini. Bu işlem GERİ ALINAMAZ.
 // ---------------------------------------------------------
 // SATIN ALMA DOĞRULAMA — Google Play Billing için. Bu endpoint'in TAM
 // olarak çalışması için henüz eksik bir kurulum var:
@@ -1690,25 +1631,21 @@ app.post('/satin-alma-dogrula', aiIstekSiniri, kimlikDogrula, async (req, res) =
     const kullaniciRef = db.collection('kullanicilar').doc(String(req.uid));
 
     if (urunId === URUN_PREMIUM_AYLIK) {
-      // ── ABONELİK DOĞRULAMASI ──
       const sonuc = await yayinciApi.purchases.subscriptions.get({
         packageName: PAKET_ADI,
         subscriptionId: urunId,
         token: satinAlmaTokeni,
       });
-      // paymentState: 1 = ödendi, 2 = deneme süresinde bekliyor
       const gecerliMi = sonuc.data.paymentState === 1 || sonuc.data.paymentState === 2;
       if (!gecerliMi) return res.status(400).json({ hata: 'Abonelik geçerli değil.' });
 
       await kullaniciRef.set({ premium: true, premiumSonKontrol: Date.now() }, { merge: true });
     } else if (URUN_KREDI_MIKTARLARI[urunId]) {
-      // ── TÜKETİLEBİLİR ÜRÜN (KREDİ PAKETİ) DOĞRULAMASI ──
       const sonuc = await yayinciApi.purchases.products.get({
         packageName: PAKET_ADI,
         productId: urunId,
         token: satinAlmaTokeni,
       });
-      // purchaseState: 0 = satın alındı
       if (sonuc.data.purchaseState !== 0) return res.status(400).json({ hata: 'Satın alma geçerli değil.' });
 
       const eklenecekKredi = URUN_KREDI_MIKTARLARI[urunId];
@@ -1719,9 +1656,6 @@ app.post('/satin-alma-dogrula', aiIstekSiniri, kimlikDogrula, async (req, res) =
         t.set(kullaniciRef, veri, { merge: true });
       });
 
-      // Google'a bu ürünün "tüketildiğini" (kullanıldığını) bildir —
-      // yoksa kullanıcı aynı satın almayı tekrar restore edemez/Google
-      // bunu "beklemede" tutar
       await yayinciApi.purchases.products.consume({
         packageName: PAKET_ADI,
         productId: urunId,
@@ -1741,14 +1675,8 @@ app.post('/satin-alma-dogrula', aiIstekSiniri, kimlikDogrula, async (req, res) =
 app.post('/hesabimi-sil', aiIstekSiniri, kimlikDogrula, async (req, res) => {
   try {
     const uid = req.uid;
-
-    // Firestore'daki kullanıcı belgesini sil (kredi, ilerleme, streak vb.)
     await db.collection('kullanicilar').doc(String(uid)).delete();
-
-    // Firebase Authentication hesabının kendisini sil — bu, kullanıcının
-    // artık hiçbir şekilde giriş yapamayacağı anlamına gelir
     await admin.auth().deleteUser(uid);
-
     res.json({ basarili: true });
   } catch (hata) {
     console.error('Hesap silme hatası:', hata);
@@ -1761,9 +1689,6 @@ app.post('/iletisim-mesaji-gonder', aiIstekSiniri, kimlikDogrula, alanUzunlugunu
     const { mesaj } = req.body;
     if (!mesaj || !mesaj.trim()) return res.status(400).json({ hata: 'Mesaj boş olamaz.' });
 
-    // Spam/kötüye kullanımı önlemek için: kullanıcı başına günde en fazla
-    // 2 iletişim mesajı — reklam ödülü sayacıyla aynı desen (Firestore
-    // transaction + gün değişince otomatik sıfırlama).
     const ILETISIM_GUNLUK_LIMIT = 2;
     const bugun = new Date();
     const bugunStr = `${bugun.getFullYear()}-${bugun.getMonth() + 1}-${bugun.getDate()}`;
