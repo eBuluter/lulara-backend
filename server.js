@@ -618,6 +618,29 @@ function ogrenciBaglamiOlustur(zayifKonular) {
   return `\n\nSTUDENT CONTEXT: This student has been struggling with these topics recently: ${temizKonular.join(', ')}.`;
 }
 
+// AI modelleri (özellikle LaTeX formülü içeren sayısal quiz gibi
+// görevlerde) JSON çıktısının İÇİNE, kaçışlanmamış ters eğik çizgiler
+// (\sqrt, \frac, \pi gibi) koyabiliyor. JSON standardında "\s", "\f" gibi
+// diziler geçerli bir kaçış değil — bu da JSON.parse'ı kırıyor
+// ("Expected ',' or '}'" hatası). Bu fonksiyon, düz JSON.parse önce
+// dener; başarısız olursa, geçerli bir JSON kaçış karakteriyle
+// (", \, /, b, f, n, r, t, u) devam ETMEYEN her ters eğik çizgiyi
+// çift ters eğik çizgiye çevirip TEKRAR dener. Bu, model çıktısını
+// bozmadan (LaTeX içeriği metin olarak aynı kalıyor) sadece JSON'ı
+// geçerli hale getiriyor.
+function _jsonGuvenliAyristir(text) {
+  try {
+    return JSON.parse(text);
+  } catch (ilkHata) {
+    try {
+      const onarilmis = text.replace(/\\(?!["\\/bfnrtu])/g, '\\\\');
+      return JSON.parse(onarilmis);
+    } catch (ikinciHata) {
+      throw ilkHata;
+    }
+  }
+}
+
 const YAPISAL_GOREV_TOKEN_TAVANI = 2048;
 const ARASTIRMA_TOKEN_TAVANI = 4096;
 
@@ -1061,7 +1084,7 @@ Each question has exactly one correct answer. Keep aciklama to 1-2 sentences.`;
     const kullanilacakModel = sayisalMi ? modelSistemsiz : ucuzModel;
     const result = await kullanilacakModel.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
-    const soru = JSON.parse(text);
+    const soru = _jsonGuvenliAyristir(text);
 
     if (sayisalMi && typeof soru.soru === 'string') {
       const gorselSvg = _gorselSvgAyikla(soru.soru);
@@ -1102,7 +1125,7 @@ If the student's answer is on the right track but incomplete, count "dogru": tru
 
     const result = await ucuzModel.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
-    const degerlendirme = JSON.parse(text);
+    const degerlendirme = _jsonGuvenliAyristir(text);
     res.json(degerlendirme);
   } catch (hata) {
     console.error('Quiz değerlendirme hatası:', hata);
@@ -1136,7 +1159,7 @@ Rules:
 
     const result = await ucuzModel.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
-    const veri = JSON.parse(text);
+    const veri = _jsonGuvenliAyristir(text);
     gunlukIstatistigiArtir('kartOlusturma');
     res.json(veri);
   } catch (hata) {
@@ -1206,7 +1229,7 @@ Rules:
 
     const result = await modelSistemsiz.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
-    const veri = JSON.parse(text);
+    const veri = _jsonGuvenliAyristir(text);
     gunlukIstatistigiArtir('ogrenmePlani');
     res.json(veri);
   } catch (hata) {
@@ -1240,7 +1263,7 @@ Max 3 sources. Only include real, working URLs you found via search — never in
     const text = result.response.text().replace(/```json|```/g, '').trim();
     let kaynaklar = [];
     try {
-      const veri = JSON.parse(text);
+      const veri = _jsonGuvenliAyristir(text);
       kaynaklar = (veri.kaynaklar || []).slice(0, 3);
     } catch (ayristirmaHatasi) {
       console.error('Kaynak JSON ayrıştırma hatası:', ayristirmaHatasi, '— ham metin:', text);
@@ -1440,7 +1463,7 @@ Return exactly ${secilenKaynaklar.length} items, matching the order above. Never
       const etiketText = etiketSonuc.response.text().replace(/```json|```/g, '').trim();
 
       let etiketler = [];
-      try { etiketler = JSON.parse(etiketText); } catch { etiketler = []; }
+      try { etiketler = _jsonGuvenliAyristir(etiketText); } catch { etiketler = []; }
 
       const kategoriKelimeleri = ['biology', 'physics', 'science', 'space', 'history',
         'philosophy', 'technology', 'psychology', 'chemistry', 'biyoloji',
@@ -1491,7 +1514,7 @@ Keep titles short (under 12 words).`;
       const yedekSonuc = await gundemModeli.generateContent(yedekPrompt);
       const yedekText = yedekSonuc.response.text().replace(/```json|```/g, '').trim();
       try {
-        const yedekVeri = JSON.parse(yedekText);
+        const yedekVeri = _jsonGuvenliAyristir(yedekText);
         haberler = yedekVeri.haberler || [];
       } catch { haberler = []; }
     }
@@ -1563,7 +1586,7 @@ Max 5 sources. Pick reliable sources useful for a student (Wikipedia, Khan Acade
     const text = result.response.text().replace(/```json|```/g, '').trim();
 
     try {
-      const veri = JSON.parse(text);
+      const veri = _jsonGuvenliAyristir(text);
       const sonucVeri = { ...veri, konu };
       _arastirmaOnbellek.set(onbellekAnahtari, { veri: sonucVeri, zaman: simdi });
       res.json(sonucVeri);
