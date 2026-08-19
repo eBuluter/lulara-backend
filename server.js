@@ -618,11 +618,6 @@ function ogrenciBaglamiOlustur(zayifKonular) {
   return `\n\nSTUDENT CONTEXT: This student has been struggling with these topics recently: ${temizKonular.join(', ')}.`;
 }
 
-// Tüm modellerde makul bir çıkış token tavanı — kaçak/aşırı uzun
-// üretimlere karşı güvenlik ağı. Sohbet dışındaki görevler (quiz/kart/
-// plan/araştırma) yapısal JSON döndürdüğü için normalde kısa kalıyor,
-// ama bir sınır olmaması, nadir bir durumda maliyetin kontrolsüz
-// artmasına izin verirdi.
 const YAPISAL_GOREV_TOKEN_TAVANI = 2048;
 const ARASTIRMA_TOKEN_TAVANI = 4096;
 
@@ -1024,11 +1019,14 @@ function _gorselSvgTemizle(metin) {
 
 app.post('/quiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(15), async (req, res) => {
   try {
-    const { konu, zorluk = 'orta', kacinilacakSorular = [], mod = 'sozel' } = req.body;
+    const { konu, zorluk = 'orta', kacinilacakSorular = [], mod = 'sozel', dil } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
 
+    const dilAdlari = { 'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish' };
+    const appDili = dilAdlari[dil] || 'English';
+
     const kacinmaMetni = kacinilacakSorular.length > 0
-      ? `\n\nÖNEMLİ: Aşağıdaki soruları TEKRAR SORMA, farklı bir soru üret:\n${kacinilacakSorular.map((s, i) => `${i+1}. ${s}`).join('\n')}`
+      ? `\n\nIMPORTANT: Do NOT ask these questions again, generate a different one:\n${kacinilacakSorular.map((s, i) => `${i+1}. ${s}`).join('\n')}`
       : '';
 
     const sayisalMi = mod === 'sayisal';
@@ -1047,18 +1045,18 @@ Bu bir SAYISAL/GÖRSEL sorudur (Numerical Quiz). Kurallar:
 - Cevap seçenekleri SAYISAL değerler olmalı (gerekirse birimle birlikte), sözel ifadeler değil.
 - Açıklama (aciklama), çözümün kısa adımlarını LaTeX ile göstermeli.` : '';
 
-    const prompt = `Sen bir ders öğretmenisin. "${konu}" konusunda ${zorluk} zorluk seviyesinde bir sınav sorusu oluştur.${kacinmaMetni}${gorselTalimati}
+    const prompt = `You are a tutor. Create a ${zorluk === 'kolay' ? 'easy' : zorluk === 'zor' ? 'hard' : 'medium'} difficulty exam question about: "${konu}"${kacinmaMetni}${gorselTalimati}
 
-SADECE JSON formatında yanıt ver, başka hiçbir şey yazma:
+Respond ONLY in ${appDili}, in this exact JSON format, no other text:
 {
-  "soru": "soru metni buraya",
-  "secenekler": ["A) seçenek", "B) seçenek", "C) seçenek", "D) seçenek"],
-  "dogruCevap": "A) seçenek",
-  "aciklama": "neden bu cevap doğru, kısa açıklama"
+  "soru": "the question text here",
+  "secenekler": ["A) option", "B) option", "C) option", "D) option"],
+  "dogruCevap": "A) option",
+  "aciklama": "why this answer is correct, short explanation"
 }
 
-Eğer açık uçlu soru tercih edersen secenekler dizisini boş bırak: "secenekler": []
-Her soruda sadece bir doğru cevap olsun. Aciklama 1-2 cümle olsun.`;
+If you prefer an open-ended question, leave secenekler as an empty array: "secenekler": []
+Each question has exactly one correct answer. Keep aciklama to 1-2 sentences.`;
 
     const kullanilacakModel = sayisalMi ? modelSistemsiz : ucuzModel;
     const result = await kullanilacakModel.generateContent(prompt);
@@ -1083,21 +1081,24 @@ Her soruda sadece bir doğru cevap olsun. Aciklama 1-2 cümle olsun.`;
 
 app.post('/quiz-degerlendir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('kullaniciCevabi', MAKS_SORU_UZUNLUGU), krediGerekli(5), async (req, res) => {
   try {
-    const { soru, dogruCevap, kullaniciCevabi } = req.body;
+    const { soru, dogruCevap, kullaniciCevabi, dil } = req.body;
 
-    const prompt = `Bir öğrenci şu soruya cevap verdi:
+    const dilAdlari = { 'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish' };
+    const appDili = dilAdlari[dil] || 'English';
 
-Soru: ${soru}
-Doğru cevap: ${dogruCevap}
-Öğrencinin cevabı: ${kullaniciCevabi}
+    const prompt = `A student answered this question:
 
-SADECE JSON formatında yanıt ver:
+Question: ${soru}
+Correct answer: ${dogruCevap}
+Student's answer: ${kullaniciCevabi}
+
+Respond ONLY in ${appDili}, in this exact JSON format:
 {
-  "dogru": true veya false,
-  "geri_bildirim": "kısa, samimi, cesaretlendirici bir değerlendirme (1-2 cümle)"
+  "dogru": true or false,
+  "geri_bildirim": "short, warm, encouraging feedback (1-2 sentences)"
 }
 
-Öğrenci doğru yönde ama eksik bir cevap verdiyse "dogru": true say ve eksiği tamamla.`;
+If the student's answer is on the right track but incomplete, count "dogru": true and fill in what's missing.`;
 
     const result = await ucuzModel.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
@@ -1214,12 +1215,6 @@ Rules:
   }
 });
 
-// DÜZELTME: bu endpoint eskiden hiç kredi almıyordu — pahalı, arama
-// destekli bir model kullandığı ve bir plan birden çok alt konu
-// içerebildiği (kullanıcı her biri için "Kaynakları göster"e basabildiği)
-// için, teorik olarak sınırsız ücretsiz kullanım anlamına geliyordu.
-// Şimdi küçük bir kredi (10) alıyor — /arastir'dan (25) daha ucuz, çünkü
-// çıktısı daha kısa (sadece 3 kaynak, özet/soru yok).
 app.post('/konu-kaynaklari-bul', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(10), async (req, res) => {
   try {
     const { konu, dil } = req.body;
@@ -1551,15 +1546,18 @@ app.post('/arastir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu',
       tools: [{ googleSearch: {} }],
     });
 
-    const prompt = `"${konu}" konusunu araştır ve SADECE JSON formatında yanıt ver:
+    const dilAdlari = { 'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish' };
+    const appDili = dilAdlari[dil] || 'English';
+
+    const prompt = `Research the topic "${konu}" and respond ONLY in ${appDili}, in this exact JSON format:
 {
-  "ozet": "konunun 3-4 cümlelik anlaşılır özeti",
+  "ozet": "a clear 3-4 sentence summary of the topic",
   "kaynaklar": [
-    {"baslik": "kaynak başlığı", "url": "https://...", "aciklama": "1 cümle açıklama"}
+    {"baslik": "source title", "url": "https://...", "aciklama": "1 sentence description"}
   ],
-  "sorular": ["sık sorulan soru 1", "soru 2", "soru 3"]
+  "sorular": ["common question 1", "question 2", "question 3"]
 }
-Max 5 kaynak. Güvenilir ve öğrenci için faydalı kaynaklar seç (Wikipedia, Khan Academy, vb.)`;
+Max 5 sources. Pick reliable sources useful for a student (Wikipedia, Khan Academy, etc.)`;
 
     const result = await arastirmaModeli.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
@@ -1578,6 +1576,10 @@ Max 5 kaynak. Güvenilir ve öğrenci için faydalı kaynaklar seç (Wikipedia, 
   }
 });
 
+// DÜZELTME: bu endpoint hic dil parametresi almiyordu ve prompt tamamen
+// Turkce yazilmisti - uygulama dili Ingilizce/Almanca/vb. olsa bile model
+// hep Turkce cevap veriyordu. Simdi diger endpoint'lerle (quiz, kartlar)
+// ayni desende dil parametresi aliyor.
 app.post('/sayfa-analiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('soru', MAKS_SORU_UZUNLUGU), krediGerekli(15), async (req, res) => {
   try {
     const { url, baslik, sayfaMetni, soru, dil } = req.body;
