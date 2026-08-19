@@ -1580,19 +1580,22 @@ Max 5 kaynak. Güvenilir ve öğrenci için faydalı kaynaklar seç (Wikipedia, 
 
 app.post('/sayfa-analiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('soru', MAKS_SORU_UZUNLUGU), krediGerekli(15), async (req, res) => {
   try {
-    const { url, baslik, sayfaMetni, soru } = req.body;
-    
+    const { url, baslik, sayfaMetni, soru, dil } = req.body;
+
+    const dilAdlari = { 'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish' };
+    const appDili = dilAdlari[dil] || 'English';
+
     const metin = sayfaMetni 
       ? sayfaMetni.substring(0, 8000)
       : null;
 
     const baglamMetni = metin 
-      ? `Sayfa başlığı: "${baslik}"\nURL: ${url}\n\nSayfa içeriği:\n${metin}`
-      : `Sayfa başlığı: "${baslik}"\nURL: ${url}`;
+      ? `Page title: "${baslik}"\nURL: ${url}\n\nPage content:\n${metin}`
+      : `Page title: "${baslik}"\nURL: ${url}`;
 
     const prompt = soru
-      ? `${baglamMetni}\n\nKullanıcının sorusu: ${soru}\n\nBu soruyu sayfa içeriğine dayanarak yanıtla. Kısa ve net ol.`
-      : `${baglamMetni}\n\nBu sayfayı öğrenci için 3-4 cümlede özetle. Ana konuyu ve önemli noktaları vurgula.`;
+      ? `${baglamMetni}\n\nUser's question: ${soru}\n\nAnswer this question based on the page content. Be short and clear. Respond ONLY in ${appDili}.`
+      : `${baglamMetni}\n\nSummarize this page for a student in 3-4 sentences. Highlight the main topic and key points. Respond ONLY in ${appDili}.`;
 
     const result = await ucuzModel.generateContent(prompt);
     res.json({ cevap: result.response.text() });
