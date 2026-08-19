@@ -576,7 +576,18 @@ Whenever your response mentions a specific named entity or concept that a studen
   - Skip: a minor name mentioned only in passing that doesn't matter to the point being made.
   - Do tag: named events, treaties, theories, technical vocabulary, formulas, specific people, movements, places — anything with real specific content behind the name that helps understanding when defined.
 - There is no fixed count to hit — let the actual content decide. A dense, unfamiliar-heavy answer easily has 5-8 tagged terms; do not under-tag it out of excess caution. Never pad by tagging truly trivial words.
-- Example: "The [TERIM:Treaty of Versailles|The 1919 peace treaty that ended World War I and imposed harsh terms on Germany] forced heavy reparations on Germany, fueling the rise of [TERIM:Weimar Republic|Germany's democratic government from 1919 to 1933, weakened by economic crises and political extremism] instability and eventually [TERIM:Nazism|The far-right ideology led by Adolf Hitler that combined extreme nationalism, racial ideology, and totalitarian control]."`;
+- Example: "The [TERIM:Treaty of Versailles|The 1919 peace treaty that ended World War I and imposed harsh terms on Germany] forced heavy reparations on Germany, fueling the rise of [TERIM:Weimar Republic|Germany's democratic government from 1919 to 1933, weakened by economic crises and political extremism] instability and eventually [TERIM:Nazism|The far-right ideology led by Adolf Hitler that combined extreme nationalism, racial ideology, and totalitarian control]."
+
+FORMATTING CLARITY — SELF-CHECK:
+Before finalizing your response, re-check: if two or more standalone 
+results, equations, or short distinct statements would end up sitting 
+right next to each other with only a space between them (not naturally 
+joined by sentence prose), put each on its own line instead. This isn't 
+limited to math — it applies to any sequence of "back-to-back units": 
+a before/after equation pair, a list of computed values, short label-
+value pairs, or similar. When in doubt, use more line breaks between 
+distinct pieces of content, not fewer. A reader should never have to 
+mentally split one dense line into several separate ideas.`;
 
 function _konuEtiketiniAyikla(metin) {
   const eslesme = metin.match(/\[KONU:([^\]]*)\]/);
@@ -1842,4 +1853,4 @@ app.get('/admin/panel', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Ders AI backend ${PORT} portunda çalışıyor`);
-});
+});s
