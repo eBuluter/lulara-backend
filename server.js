@@ -636,6 +636,16 @@ function ogrenciBaglamiOlustur(zayifKonular) {
 function _jsonMetniniOnar(text) {
   let sonuc = '';
   let stringIcinde = false;
+  let sonAnlamliKarakter = null;
+  let stringGirisOncesiKarakter = null;
+  // '{' ve '[' kapsayıcılarının bir yığını — bir string'e girerken, eğer
+  // ondan önceki karakter ',' ise, GERÇEKTEN neyin içinde olduğumuzu
+  // (obje mi dizi mi) bilmek için bu yığına bakıyoruz. ',' TEK BAŞINA
+  // yeterli değil — hem "yeni obje anahtarı geliyor" (örn. ..., "key":)
+  // hem "dizide sonraki eleman geliyor" (örn. ..., "B) 12") anlamına
+  // gelebilir; yığın olmadan ikincisi yanlışlıkla birincisi sanılıyordu.
+  const kapsayiciYigini = [];
+
   for (let i = 0; i < text.length; i++) {
     const c = text[i];
     if (stringIcinde) {
@@ -651,17 +661,20 @@ function _jsonMetniniOnar(text) {
         continue;
       }
       if (c === '"') {
-        // Bu tırnak GERÇEKTEN string'i bitiriyor mu, yoksa string'in
-        // İÇİNDE kaçışlanmamış bir tırnak mı (örn. SVG'deki
-        // viewBox="0 0 100 100")? Boşlukları atlayıp bir sonraki
-        // anlamlı karaktere bakıyoruz — eğer JSON'ın string'den SONRA
-        // beklediği bir ayraçsa (, : } ]) gerçek bitiş; değilse
-        // kaçışlanmamış bir iç tırnaktır, kaçışlayıp devam ediyoruz.
         let j = i + 1;
         while (j < text.length && /\s/.test(text[j])) j++;
         const sonrakiAnlamli = text[j];
-        const gercekBitisAyraclari = [',', ':', '}', ']', undefined];
-        if (gercekBitisAyraclari.includes(sonrakiAnlamli)) {
+        let keyMi;
+        if (stringGirisOncesiKarakter === '{') {
+          keyMi = true;
+        } else if (stringGirisOncesiKarakter === ',') {
+          const ustKapsayici = kapsayiciYigini[kapsayiciYigini.length - 1];
+          keyMi = ustKapsayici === '{';
+        } else {
+          keyMi = false;
+        }
+        const gecerliBitisler = keyMi ? [':', undefined] : [',', '}', ']', undefined];
+        if (gecerliBitisler.includes(sonrakiAnlamli)) {
           stringIcinde = false;
           sonuc += c;
         } else {
@@ -674,7 +687,15 @@ function _jsonMetniniOnar(text) {
       if (c === '\t') { sonuc += '\\t'; continue; }
       sonuc += c;
     } else {
-      if (c === '"') { stringIcinde = true; }
+      if (c === '"') {
+        stringIcinde = true;
+        stringGirisOncesiKarakter = sonAnlamliKarakter;
+      } else if (c === '{' || c === '[') {
+        kapsayiciYigini.push(c);
+      } else if (c === '}' || c === ']') {
+        kapsayiciYigini.pop();
+      }
+      if (!/\s/.test(c)) sonAnlamliKarakter = c;
       sonuc += c;
     }
   }
