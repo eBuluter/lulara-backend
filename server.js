@@ -1853,4 +1853,4 @@ app.get('/admin/panel', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Ders AI backend ${PORT} portunda çalışıyor`);
-});s
+});
