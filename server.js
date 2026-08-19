@@ -618,23 +618,75 @@ function ogrenciBaglamiOlustur(zayifKonular) {
   return `\n\nSTUDENT CONTEXT: This student has been struggling with these topics recently: ${temizKonular.join(', ')}.`;
 }
 
-// AI modelleri (özellikle LaTeX formülü içeren sayısal quiz gibi
-// görevlerde) JSON çıktısının İÇİNE, kaçışlanmamış ters eğik çizgiler
-// (\sqrt, \frac, \pi gibi) koyabiliyor. JSON standardında "\s", "\f" gibi
-// diziler geçerli bir kaçış değil — bu da JSON.parse'ı kırıyor
-// ("Expected ',' or '}'" hatası). Bu fonksiyon, düz JSON.parse önce
-// dener; başarısız olursa, geçerli bir JSON kaçış karakteriyle
-// (", \, /, b, f, n, r, t, u) devam ETMEYEN her ters eğik çizgiyi
-// çift ters eğik çizgiye çevirip TEKRAR dener. Bu, model çıktısını
-// bozmadan (LaTeX içeriği metin olarak aynı kalıyor) sadece JSON'ı
-// geçerli hale getiriyor.
+// AI modelleri (özellikle LaTeX formülü ya da gömülü SVG içeren sayısal
+// quiz gibi görevlerde) JSON çıktısının İÇİNE iki tür geçersiz karakter
+// koyabiliyor:
+//   1. Kaçışlanmamış ters eğik çizgiler (\sqrt, \frac, \pi gibi LaTeX
+//      komutları) — JSON'da "\s", "\f" gibi diziler geçerli bir kaçış
+//      değil.
+//   2. Çıplak (kaçışlanmamış) satır sonu/tab karakterleri — özellikle
+//      SVG içeriği [GORSEL_SVG]...[/GORSEL_SVG] bir string alanının
+//      İÇİNE gömülüyken, model okunabilirlik için satırlar arasına
+//      gerçek \n koyabiliyor. JSON string'i içinde ham satır sonu da
+//      geçersizdir.
+// Bu fonksiyon önce düz JSON.parse dener; başarısız olursa, metni TEK
+// GEÇİŞTE tarayıp SADECE string literal'lerin İÇİNDEYKEN bu iki sorunu
+// düzeltiyor (string dışındaki biçimlendirme boşluklarına dokunmuyor,
+// yoksa JSON'ın kendisini bozar).
+function _jsonMetniniOnar(text) {
+  let sonuc = '';
+  let stringIcinde = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (stringIcinde) {
+      if (c === '\\') {
+        const sonraki = text[i + 1];
+        const gecerliKacislar = ['"', '\\', '/', 'b', 'f', 'n', 'r', 't', 'u'];
+        if (sonraki !== undefined && gecerliKacislar.includes(sonraki)) {
+          sonuc += c + sonraki;
+          i++;
+        } else {
+          sonuc += '\\\\';
+        }
+        continue;
+      }
+      if (c === '"') {
+        // Bu tırnak GERÇEKTEN string'i bitiriyor mu, yoksa string'in
+        // İÇİNDE kaçışlanmamış bir tırnak mı (örn. SVG'deki
+        // viewBox="0 0 100 100")? Boşlukları atlayıp bir sonraki
+        // anlamlı karaktere bakıyoruz — eğer JSON'ın string'den SONRA
+        // beklediği bir ayraçsa (, : } ]) gerçek bitiş; değilse
+        // kaçışlanmamış bir iç tırnaktır, kaçışlayıp devam ediyoruz.
+        let j = i + 1;
+        while (j < text.length && /\s/.test(text[j])) j++;
+        const sonrakiAnlamli = text[j];
+        const gercekBitisAyraclari = [',', ':', '}', ']', undefined];
+        if (gercekBitisAyraclari.includes(sonrakiAnlamli)) {
+          stringIcinde = false;
+          sonuc += c;
+        } else {
+          sonuc += '\\"';
+        }
+        continue;
+      }
+      if (c === '\n') { sonuc += '\\n'; continue; }
+      if (c === '\r') { sonuc += '\\r'; continue; }
+      if (c === '\t') { sonuc += '\\t'; continue; }
+      sonuc += c;
+    } else {
+      if (c === '"') { stringIcinde = true; }
+      sonuc += c;
+    }
+  }
+  return sonuc;
+}
+
 function _jsonGuvenliAyristir(text) {
   try {
     return JSON.parse(text);
   } catch (ilkHata) {
     try {
-      const onarilmis = text.replace(/\\(?!["\\/bfnrtu])/g, '\\\\');
-      return JSON.parse(onarilmis);
+      return JSON.parse(_jsonMetniniOnar(text));
     } catch (ikinciHata) {
       throw ilkHata;
     }
