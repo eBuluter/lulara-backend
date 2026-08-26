@@ -1136,6 +1136,7 @@ app.post('/quiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MA
       : '';
 
     const sayisalMi = mod === 'sayisal';
+    const otoMi = mod === 'oto';
 
     const gorselTalimati = sayisalMi ? `
 
@@ -1151,7 +1152,27 @@ Bu bir SAYISAL/GÖRSEL sorudur (Numerical Quiz). Kurallar:
 - Cevap seçenekleri SAYISAL değerler olmalı (gerekirse birimle birlikte), sözel ifadeler değil.
 - Açıklama (aciklama), çözümün kısa adımlarını LaTeX ile göstermeli.` : '';
 
-    const prompt = `You are a tutor. Create a ${zorluk === 'kolay' ? 'easy' : zorluk === 'zor' ? 'hard' : 'medium'} difficulty exam question about: "${konu}"${kacinmaMetni}${gorselTalimati}
+    // OTO MOD: kullanıcı bir ders kartına dokunup konuyu yazdığında,
+    // hangi modun (sözel/sayısal) uygun olduğuna KULLANICI DEĞİL, AI
+    // kendisi karar veriyor — konunun doğasına göre. Model önce kendi
+    // içinde "bu sayısal mı sözel mi" diye karar veriyor, sonra ona göre
+    // ya hesaplama/SVG kurallarını ya da normal kavramsal soru kuralını
+    // uyguluyor. Aynı SVG/LaTeX kuralları burada da geçerli.
+    const otoTalimati = otoMi ? `
+
+Bu konu için ÖNCE kendi kendine karar ver: bu soru doğası gereği SAYISAL/HESAPLAMA gerektiren bir konu mu (matematik, fizik, kimya hesaplamaları, geometri gibi) yoksa SÖZEL/KAVRAMSAL bir konu mu (tarih, dil, biyoloji tanımları, olaylar gibi)?
+
+Eğer SAYISAL ise:
+- Gerçek bir hesaplama/problem çözme sorusu sor.
+- HER matematiksel ifadeyi LaTeX ile yaz: satır içi "$...$", blok "$$...$$".
+- Soru bir geometrik şekil, koordinat düzlemi, grafik, fizik düzeneği içeriyorsa mutlaka [GORSEL_SVG]<svg viewBox="0 0 W H" xmlns="http://www.w3.org/2000/svg">...</svg>[/GORSEL_SVG] ile ÇİZ (sadece <line>,<circle>,<rect>,<polygon>,<polyline>,<path>,<text>,<ellipse>; ana renk #6C63FF, ikincil #EEE9FF, arka plan ekleme, kompakt koordinatlar).
+- Cevap seçenekleri sayısal değerler olsun.
+
+Eğer SÖZEL ise:
+- Normal bir kavramsal/tanım/olay sorusu sor, SVG ya da LaTeX kullanma (gerekmedikçe).
+- Cevap seçenekleri metin ifadeler olsun.` : '';
+
+    const prompt = `You are a tutor. Create a ${zorluk === 'kolay' ? 'easy' : zorluk === 'zor' ? 'hard' : 'medium'} difficulty exam question about: "${konu}"${kacinmaMetni}${gorselTalimati}${otoTalimati}
 
 Respond ONLY in ${appDili}, in this exact JSON format, no other text:
 {
@@ -1164,12 +1185,15 @@ Respond ONLY in ${appDili}, in this exact JSON format, no other text:
 If you prefer an open-ended question, leave secenekler as an empty array: "secenekler": []
 Each question has exactly one correct answer. Keep aciklama to 1-2 sentences.`;
 
-    const kullanilacakModel = sayisalMi ? modelSistemsiz : ucuzModel;
+    // oto modda model, konunun sayısal mı sözel mi olduğuna kendi karar
+    // verdiği için — sayısal modla aynı yüksek kaliteli modeli kullanıyoruz
+    // (ucuz model bu tür bir muhakeme + olası SVG üretimi için yetersiz kalabilir)
+    const kullanilacakModel = (sayisalMi || otoMi) ? modelSistemsiz : ucuzModel;
     const result = await kullanilacakModel.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
     const soru = _jsonGuvenliAyristir(text);
 
-    if (sayisalMi && typeof soru.soru === 'string') {
+    if ((sayisalMi || otoMi) && typeof soru.soru === 'string') {
       const gorselSvg = _gorselSvgAyikla(soru.soru);
       if (gorselSvg) {
         soru.gorselSvg = gorselSvg;
