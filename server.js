@@ -587,7 +587,17 @@ limited to math — it applies to any sequence of "back-to-back units":
 a before/after equation pair, a list of computed values, short label-
 value pairs, or similar. When in doubt, use more line breaks between 
 distinct pieces of content, not fewer. A reader should never have to 
-mentally split one dense line into several separate ideas.`;
+mentally split one dense line into several separate ideas.
+
+TOPIC SWITCHING — the student may change subjects at any point:
+If the student's new message is clearly about a different subject than what 
+you were just discussing (e.g. the conversation was about biology and they 
+suddenly ask about a history date), respond to the NEW topic directly and 
+naturally — do not try to finish, wrap up, or connect it back to the previous 
+topic first. Treat each message on its own merits rather than assuming 
+continuity. Only stay on the previous topic if the student's new message 
+itself references it or builds on it. A student is free to jump between 
+subjects in the same conversation — this is normal, not a mistake to correct.`;
 
 function _konuEtiketiniAyikla(metin) {
   const eslesme = metin.match(/\[KONU:([^\]]*)\]/);
@@ -718,12 +728,12 @@ const YAPISAL_GOREV_TOKEN_TAVANI = 2048;
 const ARASTIRMA_TOKEN_TAVANI = 4096;
 
 const model = genAI.getGenerativeModel({
-  model: 'gemini-3.6-flash',
+  model: 'gemini-3.7-flash',
   systemInstruction: SISTEM_PROMPTU,
 });
 
 const modelSistemsiz = genAI.getGenerativeModel({
-  model: 'gemini-3.6-flash',
+  model: 'gemini-3.7-flash',
   generationConfig: { maxOutputTokens: ARASTIRMA_TOKEN_TAVANI },
 });
 
@@ -759,7 +769,7 @@ async function dilIcinOnbellekGetir(dilKodu) {
 
   try {
     const yeniOnbellek = await cacheManager.create({
-      model: 'models/gemini-3.6-flash',
+      model: 'models/gemini-3.7-flash',
       systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimatiOlustur(appDili),
       ttlSeconds: ONBELLEK_TTL_SANIYE,
     });
@@ -777,14 +787,14 @@ async function sohbetModeliOlustur(dilKodu) {
 
   if (onbellek) {
     return genAI.getGenerativeModel({
-      model: 'gemini-3.6-flash',
+      model: 'gemini-3.7-flash',
       cachedContent: onbellek,
       generationConfig: { maxOutputTokens: 4096 },
     });
   }
 
   return genAI.getGenerativeModel({
-    model: 'gemini-3.6-flash',
+    model: 'gemini-3.7-flash',
     systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimatiOlustur(appDili),
     generationConfig: { maxOutputTokens: 4096 },
   });
@@ -1320,7 +1330,7 @@ app.post('/konu-kaynaklari-bul', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSin
     const appDili = dilAdlari[dil] || 'English';
 
     const aramaModeli = genAI.getGenerativeModel({
-      model: 'gemini-3.6-flash',
+      model: 'gemini-3.7-flash',
       tools: [{ googleSearch: {} }],
       generationConfig: { maxOutputTokens: YAPISAL_GOREV_TOKEN_TAVANI },
     });
@@ -1452,7 +1462,7 @@ app.post('/gundem-yenile', aiIstekSiniri, kimlikDogrula, async (req, res) => {
     const appDili = dilAdlari[dil] || 'English';
 
     const gundemModeli = genAI.getGenerativeModel({
-      model: 'gemini-3.6-flash',
+      model: 'gemini-3.7-flash',
       tools: [{ googleSearch: {} }],
     });
 
@@ -1638,7 +1648,7 @@ app.post('/arastir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu',
     }
 
     const arastirmaModeli = genAI.getGenerativeModel({
-      model: 'gemini-3.6-flash',
+      model: 'gemini-3.7-flash',
       tools: [{ googleSearch: {} }],
     });
 
