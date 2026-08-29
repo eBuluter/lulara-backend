@@ -781,8 +781,35 @@ async function dilIcinOnbellekGetir(dilKodu) {
   }
 }
 
-async function sohbetModeliOlustur(dilKodu) {
+const MAKS_GECMIS_MESAJ_STANDART = 8;
+const MAKS_GECMIS_MESAJ_PRO = 24;
+const KREDI_SOHBET_STANDART = 10;
+const KREDI_SOHBET_PRO = 20;
+
+// "Pro" mod — AYNI model (gemini-3.7-flash), ekstra maliyet esas olarak
+// daha uzun sohbet geçmişinden geliyor (Flash'ta bu ucuz). Fiyat farkı
+// (20 vs 10 kredi) hem bu ekstra maliyeti hem de biraz daha özenli/
+// derinlemesine cevap verme talimatını karşılıyor.
+const PRO_MOD_EKI = `
+
+PRO MODE ACTIVE: The student has opted into a more thorough tutoring mode. Make real use of the FULL conversation history provided — reference earlier parts of the conversation naturally when relevant, notice patterns across multiple messages (recurring confusion, related topics they've asked about before), and give slightly more careful, nuanced answers than you might otherwise. Do not pad with unnecessary length — depth and genuine attentiveness matter more than word count.`;
+
+async function sohbetModeliOlustur(dilKodu, proMu) {
   const appDili = DIL_ADLARI_ONBELLEK[dilKodu] || 'English';
+
+  // Pro mod, önbellekli (cached) sistem talimatı yolunu ATLIYOR —
+  // hem PRO_MOD_EKI'ni eklemek için önbelleği (dil başına) karmaşıklaştırmamak
+  // hem de zaten daha yüksek kredi ödeyen bu kullanıcılar için basitliği
+  // tercih etmek adına. Maliyet farkı, uzun geçmiş + önbelleksiz giriş
+  // token'larıyla zaten fiyata yansıyor.
+  if (proMu) {
+    return genAI.getGenerativeModel({
+      model: 'gemini-3.7-flash',
+      systemInstruction: SISTEM_PROMPTU + '\n\nDİL TALİMATI: ' + dilTalimatiOlustur(appDili) + PRO_MOD_EKI,
+      generationConfig: { maxOutputTokens: 4096 },
+    });
+  }
+
   const onbellek = await dilIcinOnbellekGetir(dilKodu);
 
   if (onbellek) {
@@ -800,21 +827,34 @@ async function sohbetModeliOlustur(dilKodu) {
   });
 }
 
-const MAKS_GECMIS_MESAJ = 8;
-
-app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, krediGerekli(10), async (req, res) => {
+app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, async (req, res) => {
   try {
-    const { mesajlar, dil, zayifKonular } = req.body;
+    const { mesajlar, dil, zayifKonular, pro } = req.body;
+    const proMu = pro === true;
 
-    const sohbetModeli = await sohbetModeliOlustur(dil);
+    // Sabit krediGerekli(10) middleware'i yerine, seçilen moda göre
+    // dinamik miktar düşülüyor (Standart 10, Pro 20).
+    try {
+      await krediDus(req.uid, proMu ? KREDI_SOHBET_PRO : KREDI_SOHBET_STANDART, req.misafirMi);
+    } catch (krediHatasi) {
+      if (krediHatasi.message === 'YETERSIZ_KREDI') {
+        return res.status(402).json({
+          hata: 'Yetersiz kredi.', kod: 'YETERSIZ_KREDI', kalanKredi: krediHatasi.kalanKredi,
+        });
+      }
+      throw krediHatasi;
+    }
+
+    const sohbetModeli = await sohbetModeliOlustur(dil, proMu);
 
     if (!mesajlar || !Array.isArray(mesajlar)) {
       return res.status(400).json({ hata: 'Mesaj listesi gerekli.' });
     }
 
+    const maksGecmisMesaj = proMu ? MAKS_GECMIS_MESAJ_PRO : MAKS_GECMIS_MESAJ_STANDART;
     let mesajlarKarsilamaHaric = mesajlar.slice(1);
-    if (mesajlarKarsilamaHaric.length > MAKS_GECMIS_MESAJ) {
-      mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(-MAKS_GECMIS_MESAJ);
+    if (mesajlarKarsilamaHaric.length > maksGecmisMesaj) {
+      mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(-maksGecmisMesaj);
       while (mesajlarKarsilamaHaric.length > 0 && mesajlarKarsilamaHaric[0].kullaniciMi !== true) {
         mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(1);
       }
@@ -904,19 +944,32 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
   }
 });
 
-app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, krediGerekli(10), async (req, res) => {
+app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, async (req, res) => {
   try {
-    const { mesajlar, dil, zayifKonular } = req.body;
+    const { mesajlar, dil, zayifKonular, pro } = req.body;
+    const proMu = pro === true;
 
-    const sohbetModeli = await sohbetModeliOlustur(dil);
+    try {
+      await krediDus(req.uid, proMu ? KREDI_SOHBET_PRO : KREDI_SOHBET_STANDART, req.misafirMi);
+    } catch (krediHatasi) {
+      if (krediHatasi.message === 'YETERSIZ_KREDI') {
+        return res.status(402).json({
+          hata: 'Yetersiz kredi.', kod: 'YETERSIZ_KREDI', kalanKredi: krediHatasi.kalanKredi,
+        });
+      }
+      throw krediHatasi;
+    }
+
+    const sohbetModeli = await sohbetModeliOlustur(dil, proMu);
 
     if (!mesajlar || !Array.isArray(mesajlar)) {
       return res.status(400).json({ hata: 'Mesaj listesi gerekli.' });
     }
 
+    const maksGecmisMesaj2 = proMu ? MAKS_GECMIS_MESAJ_PRO : MAKS_GECMIS_MESAJ_STANDART;
     let mesajlarKarsilamaHaric = mesajlar.slice(1);
-    if (mesajlarKarsilamaHaric.length > MAKS_GECMIS_MESAJ) {
-      mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(-MAKS_GECMIS_MESAJ);
+    if (mesajlarKarsilamaHaric.length > maksGecmisMesaj2) {
+      mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(-maksGecmisMesaj2);
       while (mesajlarKarsilamaHaric.length > 0 && mesajlarKarsilamaHaric[0].kullaniciMi !== true) {
         mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(1);
       }
@@ -1275,7 +1328,7 @@ Rules:
   }
 });
 
-app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(50), async (req, res) => {
+app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), async (req, res) => {
   try {
     const { konu, seviye, dil, sinavTarihi } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
@@ -1337,6 +1390,22 @@ Rules:
     const result = await modelSistemsiz.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
     const veri = _jsonGuvenliAyristir(text);
+
+    // DÜZELTME: kredi artık üretim BAŞARILI olduktan SONRA düşülüyor
+    // (/arastir'daki ile aynı desen) — önceden middleware üretim
+    // denemeden ÖNCE düşüyordu, bu da zaman aşımı/hata durumunda
+    // kullanıcının hiçbir şey almadan kredi kaybetmesine yol açıyordu.
+    try {
+      await krediDus(req.uid, 50, req.misafirMi);
+    } catch (krediHatasi) {
+      if (krediHatasi.message === 'YETERSIZ_KREDI') {
+        return res.status(402).json({
+          hata: 'Yetersiz kredi.', kod: 'YETERSIZ_KREDI', kalanKredi: krediHatasi.kalanKredi,
+        });
+      }
+      throw krediHatasi;
+    }
+
     gunlukIstatistigiArtir('ogrenmePlani');
     res.json(veri);
   } catch (hata) {
