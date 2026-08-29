@@ -639,9 +639,10 @@ function isimBaglamiOlustur(isim) {
 }
 
 // Çok uzun sohbetlerde, eski mesajlar geçmişten kırpılınca AI sohbetin
-// NEDEN başladığını tamamen unutuyordu. Tam bir AI-özetleme (ekstra
-// API çağrısı + maliyet) yerine, hafif bir "çıpa" kullanıyoruz: kırpma
-// olduğunda, sohbetin İLK kullanıcı mesajını kısaca hatırlatıyoruz.
+// NEDEN başladığını tamamen unutuyordu. Bu, "hafif çıpa"nın (yukarıdaki
+// fonksiyon) YEDEK planı — asıl artık GERÇEK bir AI-üretimi özet
+// kullanıyoruz (bkz. konusmaOzetiGuncelle). Özetleme başarısız olursa
+// (API hatası vb.) bu çıpaya geri düşülüyor.
 function konusmaCipaNotuOlustur(mesajlarKarsilamaHaric, kirpildiMi) {
   if (!kirpildiMi) return '';
   const ilkKullaniciMesaji = mesajlarKarsilamaHaric.find((m) => m.kullaniciMi === true);
@@ -649,6 +650,35 @@ function konusmaCipaNotuOlustur(mesajlarKarsilamaHaric, kirpildiMi) {
   const kisaltilmis = ilkKullaniciMesaji.metin.trim().substring(0, 200);
   const kesildiMi = ilkKullaniciMesaji.metin.trim().length > 200;
   return `\n\nCONVERSATION CONTEXT: This is a long-running conversation, and some earlier messages have been trimmed from what you can see below. It originally started with the student asking: "${kisaltilmis}${kesildiMi ? '...' : ''}" — keep this original context in mind even though you can't see every message since then.`;
+}
+
+// GERÇEK rolling özet — sadece geçmiş kırpıldığında ve daha önce
+// özetlenmemiş YENİ mesajlar varsa çağrılıyor (her mesajda değil, bu
+// yüzden maliyeti düşük kalıyor). Önceki özeti alıp, yeni kırpılan
+// mesajları içine katarak TEK, güncel, tutarlı bir özet üretiyor —
+// sadece eskiye ekleme yapmıyor, gerçekten yeniden yazıyor.
+async function konusmaOzetiGuncelle(yeniMesajlar, oncekiOzet, appDili) {
+  if (!yeniMesajlar || yeniMesajlar.length === 0) return oncekiOzet || null;
+  try {
+    const mesajMetni = yeniMesajlar.map((m) => {
+      const rol = m.kullaniciMi ? 'Student' : 'Tutor';
+      const icerik = (m.metin || '[non-text content]').toString().substring(0, 500);
+      return `${rol}: ${icerik}`;
+    }).join('\n');
+
+    const prompt = `You are maintaining a running summary of an ongoing tutoring conversation, so the tutor can stay aware of earlier context even after old messages get trimmed from what it directly sees.
+
+${oncekiOzet ? `EXISTING SUMMARY SO FAR:\n${oncekiOzet}\n\n` : ''}NEW MESSAGES TO FOLD INTO THE SUMMARY:\n${mesajMetni}
+
+Write ONE updated, concise summary (3-6 sentences) in ${appDili} covering the key topics discussed, what the student seems to understand well, and anything they were confused about or asked to revisit. Merge the existing summary with the new messages into a single coherent updated summary — do not just append the new part, actually rewrite it as one whole. Respond with ONLY the summary text, nothing else, no preamble.`;
+
+    const result = await ucuzModel.generateContent(prompt);
+    const metin = result.response.text().trim();
+    return metin.length > 0 ? metin : (oncekiOzet || null);
+  } catch (hata) {
+    console.error('Konuşma özeti güncelleme hatası (çıpaya düşülüyor):', hata.message || hata);
+    return null; // null dönerse çağıran taraf hafif çıpaya geri düşüyor
+  }
 }
 
 // AI modelleri (özellikle LaTeX formülü ya da gömülü SVG içeren sayısal
@@ -852,7 +882,7 @@ async function sohbetModeliOlustur(dilKodu, proMu) {
 
 app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, async (req, res) => {
   try {
-    const { mesajlar, dil, zayifKonular, pro, isim } = req.body;
+    const { mesajlar, dil, zayifKonular, pro, isim, oncekiOzet, oncekiOzetSayisi } = req.body;
     const proMu = pro === true;
 
     // Sabit krediGerekli(10) middleware'i yerine, seçilen moda göre
@@ -877,7 +907,30 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
     const maksGecmisMesaj = proMu ? MAKS_GECMIS_MESAJ_PRO : MAKS_GECMIS_MESAJ_STANDART;
     let mesajlarKarsilamaHaric = mesajlar.slice(1);
     const kirpildiMi = mesajlarKarsilamaHaric.length > maksGecmisMesaj;
-    const konusmaCipaNotu = konusmaCipaNotuOlustur(mesajlarKarsilamaHaric, kirpildiMi);
+
+    // GERÇEK ROLLING ÖZET: kırpma varsa ve daha önce özetlenmemiş yeni
+    // mesajlar varsa (dusenSayisi > oncekiOzetSayisi), sadece o YENİ
+    // kısmı özetleyip mevcut özete katıyoruz — her seferinde baştan
+    // özetlemiyoruz, maliyet sadece gerçek artışla orantılı.
+    let yeniOzet = oncekiOzet || null;
+    let yeniOzetSayisi = oncekiOzetSayisi || 0;
+    if (kirpildiMi) {
+      const dusenSayisi = mesajlarKarsilamaHaric.length - maksGecmisMesaj;
+      if (dusenSayisi > yeniOzetSayisi) {
+        const yeniDusenler = mesajlarKarsilamaHaric.slice(yeniOzetSayisi, dusenSayisi);
+        const appDiliOzet = DIL_ADLARI_ONBELLEK[dil] || 'English';
+        const ozetSonuc = await konusmaOzetiGuncelle(yeniDusenler, oncekiOzet, appDiliOzet);
+        if (ozetSonuc) {
+          yeniOzet = ozetSonuc;
+          yeniOzetSayisi = dusenSayisi;
+        }
+      }
+    }
+    // Özetleme başarısız olduysa (yeniOzet hâlâ null), hafif çıpaya düş.
+    const konusmaCipaNotu = yeniOzet
+      ? `\n\nCONVERSATION SUMMARY (earlier parts of this long conversation, condensed): ${yeniOzet}`
+      : konusmaCipaNotuOlustur(mesajlarKarsilamaHaric, kirpildiMi);
+
     if (kirpildiMi) {
       mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(-maksGecmisMesaj);
       while (mesajlarKarsilamaHaric.length > 0 && mesajlarKarsilamaHaric[0].kullaniciMi !== true) {
@@ -955,7 +1008,7 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
     }
 
     gunlukIstatistigiArtir('sohbetMesaji');
-    res.write(`data: ${JSON.stringify({ bitti: true, cevap: girisCumlesi, adimlar, gorselSvg, oneriler, konu: konuEtiketi, terimler })}\n\n`);
+    res.write(`data: ${JSON.stringify({ bitti: true, cevap: girisCumlesi, adimlar, gorselSvg, oneriler, konu: konuEtiketi, terimler, yeniOzet, yeniOzetSayisi })}\n\n`);
     res.end();
 
   } catch (hata) {
@@ -971,7 +1024,7 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
 
 app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, async (req, res) => {
   try {
-    const { mesajlar, dil, zayifKonular, pro, isim } = req.body;
+    const { mesajlar, dil, zayifKonular, pro, isim, oncekiOzet, oncekiOzetSayisi } = req.body;
     const proMu = pro === true;
 
     try {
@@ -994,7 +1047,25 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, asy
     const maksGecmisMesaj2 = proMu ? MAKS_GECMIS_MESAJ_PRO : MAKS_GECMIS_MESAJ_STANDART;
     let mesajlarKarsilamaHaric = mesajlar.slice(1);
     const kirpildiMi2 = mesajlarKarsilamaHaric.length > maksGecmisMesaj2;
-    const konusmaCipaNotu2 = konusmaCipaNotuOlustur(mesajlarKarsilamaHaric, kirpildiMi2);
+
+    let yeniOzet2 = oncekiOzet || null;
+    let yeniOzetSayisi2 = oncekiOzetSayisi || 0;
+    if (kirpildiMi2) {
+      const dusenSayisi2 = mesajlarKarsilamaHaric.length - maksGecmisMesaj2;
+      if (dusenSayisi2 > yeniOzetSayisi2) {
+        const yeniDusenler2 = mesajlarKarsilamaHaric.slice(yeniOzetSayisi2, dusenSayisi2);
+        const appDiliOzet2 = DIL_ADLARI_ONBELLEK[dil] || 'English';
+        const ozetSonuc2 = await konusmaOzetiGuncelle(yeniDusenler2, oncekiOzet, appDiliOzet2);
+        if (ozetSonuc2) {
+          yeniOzet2 = ozetSonuc2;
+          yeniOzetSayisi2 = dusenSayisi2;
+        }
+      }
+    }
+    const konusmaCipaNotu2 = yeniOzet2
+      ? `\n\nCONVERSATION SUMMARY (earlier parts of this long conversation, condensed): ${yeniOzet2}`
+      : konusmaCipaNotuOlustur(mesajlarKarsilamaHaric, kirpildiMi2);
+
     if (kirpildiMi2) {
       mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(-maksGecmisMesaj2);
       while (mesajlarKarsilamaHaric.length > 0 && mesajlarKarsilamaHaric[0].kullaniciMi !== true) {
@@ -1044,7 +1115,7 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, asy
     if (adimlar.length > 0) {
       const ilkEtiketIndeksi = hamCevap.indexOf('[ADIM]');
       let girisCumlesi = _gorselSvgTemizle(hamCevap.substring(0, ilkEtiketIndeksi)).replace(/\[ONERI:[^\]]*\]/g, '').trim();
-      res.json({ cevap: girisCumlesi, adimlar, gorselSvg: null, oneriler, konu: konuEtiketi2, terimler: terimler2 });
+      res.json({ cevap: girisCumlesi, adimlar, gorselSvg: null, oneriler, konu: konuEtiketi2, terimler: terimler2, yeniOzet: yeniOzet2, yeniOzetSayisi: yeniOzetSayisi2 });
     } else {
       const gorselSvg = _gorselSvgAyikla(hamCevap);
       let temizMetin = _gorselSvgTemizle(hamCevap)
@@ -1055,7 +1126,7 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, asy
       if (temizMetin.length === 0) {
         temizMetin = 'The response got cut off while generating something complex (like a detailed diagram). Please try again — maybe ask for a slightly simpler version.';
       }
-      res.json({ cevap: temizMetin, adimlar: null, gorselSvg, oneriler, konu: konuEtiketi2, terimler: terimler2 });
+      res.json({ cevap: temizMetin, adimlar: null, gorselSvg, oneriler, konu: konuEtiketi2, terimler: terimler2, yeniOzet: yeniOzet2, yeniOzetSayisi: yeniOzetSayisi2 });
     }
   } catch (hata) {
     console.error('Gemini API hatası:', hata);
