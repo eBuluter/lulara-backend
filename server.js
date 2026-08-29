@@ -638,6 +638,19 @@ function isimBaglamiOlustur(isim) {
   return `\n\nSTUDENT'S NAME: ${temizIsim}. You know their first name, but use it SPARINGLY — most responses should not include it at all. When it does come up, let it feel natural: a warm greeting, encouragement after they get something right, or a nice moment when they finish a topic. Never force it into short, purely factual replies, and never start every message with it — that would feel robotic, not warm.`;
 }
 
+// Çok uzun sohbetlerde, eski mesajlar geçmişten kırpılınca AI sohbetin
+// NEDEN başladığını tamamen unutuyordu. Tam bir AI-özetleme (ekstra
+// API çağrısı + maliyet) yerine, hafif bir "çıpa" kullanıyoruz: kırpma
+// olduğunda, sohbetin İLK kullanıcı mesajını kısaca hatırlatıyoruz.
+function konusmaCipaNotuOlustur(mesajlarKarsilamaHaric, kirpildiMi) {
+  if (!kirpildiMi) return '';
+  const ilkKullaniciMesaji = mesajlarKarsilamaHaric.find((m) => m.kullaniciMi === true);
+  if (!ilkKullaniciMesaji || !ilkKullaniciMesaji.metin) return '';
+  const kisaltilmis = ilkKullaniciMesaji.metin.trim().substring(0, 200);
+  const kesildiMi = ilkKullaniciMesaji.metin.trim().length > 200;
+  return `\n\nCONVERSATION CONTEXT: This is a long-running conversation, and some earlier messages have been trimmed from what you can see below. It originally started with the student asking: "${kisaltilmis}${kesildiMi ? '...' : ''}" — keep this original context in mind even though you can't see every message since then.`;
+}
+
 // AI modelleri (özellikle LaTeX formülü ya da gömülü SVG içeren sayısal
 // quiz gibi görevlerde) JSON çıktısının İÇİNE iki tür geçersiz karakter
 // koyabiliyor:
@@ -863,7 +876,9 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
 
     const maksGecmisMesaj = proMu ? MAKS_GECMIS_MESAJ_PRO : MAKS_GECMIS_MESAJ_STANDART;
     let mesajlarKarsilamaHaric = mesajlar.slice(1);
-    if (mesajlarKarsilamaHaric.length > maksGecmisMesaj) {
+    const kirpildiMi = mesajlarKarsilamaHaric.length > maksGecmisMesaj;
+    const konusmaCipaNotu = konusmaCipaNotuOlustur(mesajlarKarsilamaHaric, kirpildiMi);
+    if (kirpildiMi) {
       mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(-maksGecmisMesaj);
       while (mesajlarKarsilamaHaric.length > 0 && mesajlarKarsilamaHaric[0].kullaniciMi !== true) {
         mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(1);
@@ -884,7 +899,7 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
 
     const sonMesajVerisi = mesajlarKarsilamaHaric[mesajlarKarsilamaHaric.length - 1];
     const sonMesajParts = [];
-    const baglamNotu = ogrenciBaglamiOlustur(zayifKonular) + isimBaglamiOlustur(isim);
+    const baglamNotu = ogrenciBaglamiOlustur(zayifKonular) + isimBaglamiOlustur(isim) + konusmaCipaNotu;
     if (baglamNotu) sonMesajParts.push({ text: baglamNotu.trim() });
     if (sonMesajVerisi.metin && sonMesajVerisi.metin.trim()) {
       sonMesajParts.push({ text: sonMesajVerisi.metin });
@@ -978,7 +993,9 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, asy
 
     const maksGecmisMesaj2 = proMu ? MAKS_GECMIS_MESAJ_PRO : MAKS_GECMIS_MESAJ_STANDART;
     let mesajlarKarsilamaHaric = mesajlar.slice(1);
-    if (mesajlarKarsilamaHaric.length > maksGecmisMesaj2) {
+    const kirpildiMi2 = mesajlarKarsilamaHaric.length > maksGecmisMesaj2;
+    const konusmaCipaNotu2 = konusmaCipaNotuOlustur(mesajlarKarsilamaHaric, kirpildiMi2);
+    if (kirpildiMi2) {
       mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(-maksGecmisMesaj2);
       while (mesajlarKarsilamaHaric.length > 0 && mesajlarKarsilamaHaric[0].kullaniciMi !== true) {
         mesajlarKarsilamaHaric = mesajlarKarsilamaHaric.slice(1);
@@ -1000,7 +1017,7 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, asy
 
     const sonMesajVerisi = mesajlarKarsilamaHaric[mesajlarKarsilamaHaric.length - 1];
     const sonMesajParts = [];
-    const baglamNotu2 = ogrenciBaglamiOlustur(zayifKonular) + isimBaglamiOlustur(isim);
+    const baglamNotu2 = ogrenciBaglamiOlustur(zayifKonular) + isimBaglamiOlustur(isim) + konusmaCipaNotu2;
     if (baglamNotu2) sonMesajParts.push({ text: baglamNotu2.trim() });
     if (sonMesajVerisi.metin && sonMesajVerisi.metin.trim()) {
       sonMesajParts.push({ text: sonMesajVerisi.metin });
@@ -1906,6 +1923,29 @@ app.post('/hesabimi-sil', aiIstekSiniri, kimlikDogrula, async (req, res) => {
   } catch (hata) {
     console.error('Hesap silme hatası:', hata);
     res.status(500).json({ hata: 'Hesap silinemedi, lütfen tekrar dene.' });
+  }
+});
+
+// Sohbet cevaplarına 👍/👎 geri bildirim — ileride prompt/model
+// kalitesini değerlendirmek için Firestore'a kaydediliyor. Kullanıcıya
+// hiçbir görünür etkisi yok, sadece geliştirici tarafında veri biriktiriyor.
+app.post('/sohbet-geri-bildirim', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('cevapMetni', MAKS_MESAJ_UZUNLUGU), async (req, res) => {
+  try {
+    const { begenildiMi, soruMetni, cevapMetni } = req.body;
+    if (typeof begenildiMi !== 'boolean') {
+      return res.status(400).json({ hata: 'begenildiMi (true/false) gerekli.' });
+    }
+    await db.collection('sohbet_geri_bildirimleri').add({
+      uid: req.uid,
+      begenildiMi,
+      soruMetni: (soruMetni || '').toString().substring(0, 500),
+      cevapMetni: (cevapMetni || '').toString().substring(0, 1000),
+      zaman: Date.now(),
+    });
+    res.json({ basarili: true });
+  } catch (hata) {
+    console.error('Sohbet geri bildirimi kaydetme hatası:', hata);
+    res.status(500).json({ hata: 'Geri bildirim kaydedilemedi.' });
   }
 });
 
