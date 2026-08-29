@@ -628,6 +628,16 @@ function ogrenciBaglamiOlustur(zayifKonular) {
   return `\n\nSTUDENT CONTEXT: This student has been struggling with these topics recently: ${temizKonular.join(', ')}.`;
 }
 
+// Google hesabından gelen ismi sohbete DOĞAL ve SEYREK katmak için —
+// her mesajda değil, sadece bazen (karşılama, teşvik, başarı anı gibi)
+// kullanılması isteniyor. Sadece ilk isim kullanılıyor, soyadı hariç.
+function isimBaglamiOlustur(isim) {
+  if (!isim || typeof isim !== 'string') return '';
+  const temizIsim = isim.trim().split(/\s+/)[0];
+  if (!temizIsim || temizIsim.length > 40) return '';
+  return `\n\nSTUDENT'S NAME: ${temizIsim}. You know their first name, but use it SPARINGLY — most responses should not include it at all. When it does come up, let it feel natural: a warm greeting, encouragement after they get something right, or a nice moment when they finish a topic. Never force it into short, purely factual replies, and never start every message with it — that would feel robotic, not warm.`;
+}
+
 // AI modelleri (özellikle LaTeX formülü ya da gömülü SVG içeren sayısal
 // quiz gibi görevlerde) JSON çıktısının İÇİNE iki tür geçersiz karakter
 // koyabiliyor:
@@ -829,7 +839,7 @@ async function sohbetModeliOlustur(dilKodu, proMu) {
 
 app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, async (req, res) => {
   try {
-    const { mesajlar, dil, zayifKonular, pro } = req.body;
+    const { mesajlar, dil, zayifKonular, pro, isim } = req.body;
     const proMu = pro === true;
 
     // Sabit krediGerekli(10) middleware'i yerine, seçilen moda göre
@@ -874,7 +884,7 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
 
     const sonMesajVerisi = mesajlarKarsilamaHaric[mesajlarKarsilamaHaric.length - 1];
     const sonMesajParts = [];
-    const baglamNotu = ogrenciBaglamiOlustur(zayifKonular);
+    const baglamNotu = ogrenciBaglamiOlustur(zayifKonular) + isimBaglamiOlustur(isim);
     if (baglamNotu) sonMesajParts.push({ text: baglamNotu.trim() });
     if (sonMesajVerisi.metin && sonMesajVerisi.metin.trim()) {
       sonMesajParts.push({ text: sonMesajVerisi.metin });
@@ -946,7 +956,7 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
 
 app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, async (req, res) => {
   try {
-    const { mesajlar, dil, zayifKonular, pro } = req.body;
+    const { mesajlar, dil, zayifKonular, pro, isim } = req.body;
     const proMu = pro === true;
 
     try {
@@ -990,7 +1000,7 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, asy
 
     const sonMesajVerisi = mesajlarKarsilamaHaric[mesajlarKarsilamaHaric.length - 1];
     const sonMesajParts = [];
-    const baglamNotu2 = ogrenciBaglamiOlustur(zayifKonular);
+    const baglamNotu2 = ogrenciBaglamiOlustur(zayifKonular) + isimBaglamiOlustur(isim);
     if (baglamNotu2) sonMesajParts.push({ text: baglamNotu2.trim() });
     if (sonMesajVerisi.metin && sonMesajVerisi.metin.trim()) {
       sonMesajParts.push({ text: sonMesajVerisi.metin });
