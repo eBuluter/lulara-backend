@@ -1449,7 +1449,7 @@ Rules:
 
 app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), async (req, res) => {
   try {
-    const { konu, seviye, dil, sinavTarihi } = req.body;
+    const { konu, seviye, dil, sinavTarihi, teshisYuzdesi, teshisDetaylari } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
 
     const dilAdlari = { 'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish' };
@@ -1460,7 +1460,21 @@ app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuS
       orta: 'The student has MODERATE familiarity — they know the basics but have gaps. The plan should briefly cover fundamentals then focus on building solid understanding.',
       ileri: 'The student has HIGH familiarity already — the plan should focus on refining, filling specific gaps, and advanced/nuanced aspects rather than basics.',
     };
-    const seviyeAciklama = seviyeAciklamalari[seviye] || seviyeAciklamalari.dusuk;
+    let seviyeAciklama = seviyeAciklamalari[seviye] || seviyeAciklamalari.dusuk;
+
+    // DÜZELTME: seviye artık sadece kullanıcının KENDİ TAHMİNİ değil —
+    // isteğe bağlı olarak, plan oluşturulmadan hemen önce çözülen kısa
+    // bir teşhis quiz'inin GERÇEK sonucu da gönderilebiliyor. Bu, prompt'a
+    // ek, somut bir sinyal olarak ekleniyor (seviye seçimini geçersiz
+    // kılmıyor, onu DESTEKLİYOR/inceltiyor).
+    let teshisTalimati = '';
+    if (typeof teshisYuzdesi === 'number') {
+      teshisTalimati = `\n\nDIAGNOSTIC CHECK RESULT: Before requesting this plan, the student took a short diagnostic quiz on this exact topic and scored ${teshisYuzdesi}%.`;
+      if (typeof teshisDetaylari === 'string' && teshisDetaylari.trim()) {
+        teshisTalimati += ` Specific notes from that check: ${teshisDetaylari.trim().substring(0, 400)}`;
+      }
+      teshisTalimati += ' Use this REAL performance data to calibrate the plan more precisely than the self-reported level alone — if the diagnostic result suggests they are stronger or weaker than the selected level implies, weight the actual diagnostic result more heavily.';
+    }
 
     let kalanGun = null;
     if (sinavTarihi) {
@@ -1488,22 +1502,26 @@ This is an EXAM PREPARATION plan. The exam is in ${kalanGun} day(s). Time pressu
 
     const prompt = `You are an expert curriculum designer. A student wants to learn: "${konu}"
 
-Student's current level: ${seviyeAciklama}${zamanTalimati}
+Student's current level: ${seviyeAciklama}${teshisTalimati}${zamanTalimati}
 
-Break this topic down into an ORDERED sequence of 4-8 sub-topics that, learned in order, will take the student from their current level to solid mastery of "${konu}". Each sub-topic should be small enough to teach in a single focused session (a chat conversation, roughly 10-20 minutes of study).
+Break this topic down into an ORDERED sequence of 4-8 sub-topics that will take the student from their current level to solid mastery of "${konu}".
+
+CRITICAL — PREREQUISITE ORDERING: think explicitly about dependency structure before ordering. For each sub-topic, ask yourself "what must the student already understand before this makes sense?" — then order so that no sub-topic ever depends on something taught later. This is not just "logical flow", it is a real prerequisite graph: e.g. you cannot teach factoring quadratics before basic factoring, and you cannot teach the chain rule before derivatives of simple functions. Get this ordering right even if it means grouping related foundational pieces together early.
+
+Each sub-topic should be small enough to teach in a single focused session (a chat conversation, roughly 10-20 minutes of study).
 
 Respond ONLY in ${appDili}, in this exact JSON format, no other text:
 {
   ${kalanGun !== null ? '"uyari": "warning message described above, or empty string if time is ample",' : ''}
   "maddeler": [
-    {"baslik": "short sub-topic name (3-6 words)", "aciklama": "1 short sentence explaining why this comes at this point in the sequence", "alanTuru": "sayisal" or "sozel"${ekstraAlanlar}}
+    {"baslik": "short sub-topic name (3-6 words)", "aciklama": "1 short sentence explaining why this comes at this point in the sequence (reference the prerequisite reasoning)", "alanTuru": "sayisal" or "sozel"${ekstraAlanlar}}
   ]
 }
 
 Rules:
-- Order matters — each sub-topic should build on the previous ones.
+- Order matters — each sub-topic should build on the previous ones, following real prerequisite dependencies as described above.
 - Titles must be specific and concrete, never vague (bad: "Basics", good: "Verb conjugation in present tense").
-- Match the depth to the student's stated level — do not include topics they already know if level is "ileri", and do not skip fundamentals if level is "dusuk".
+- Match the depth to the student's stated level (and diagnostic result, if provided) — do not include topics they already know if level is "ileri", and do not skip fundamentals if level is "dusuk".
 - "alanTuru": classify each sub-topic as "sayisal" (numerical/quantitative — math, physics, chemistry calculations, or anything where diagrams/formulas/step-by-step problem-solving are the natural way to practice) or "sozel" (verbal/conceptual — language, history, literature, definitions, or anything better practiced through explanation and recall rather than calculation). This determines which quiz mode the student gets for practice, so classify based on how the topic is actually PRACTICED, not just its general subject area (e.g. "History of calculus" is sozel even though it's about math).`;
 
     const result = await modelSistemsiz.generateContent(prompt);
