@@ -1274,89 +1274,110 @@ function _gorselSvgTemizle(metin) {
   return temiz;
 }
 
-app.post('/quiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), krediGerekli(15), async (req, res) => {
+// DÜZELTME: quiz artık soru başına ayrı bir istek göndermiyor — kullanıcı
+// başlarken 5/10/15 soru seçiyor, TÜMÜ TEK SEFERDE üretilip kredisi de
+// tek seferde (soruSayisi × 10) düşülüyor. Bu hem "aynı soruyu tekrar
+// sorma" kontrolünü kolaylaştırıyor (AI tüm soruları aynı anda görüyor)
+// hem de soru başına ayrı AI çağrısı yapmayı ortadan kaldırıyor.
+const KREDI_QUIZ_SORU_BASI = 10;
+const GECERLI_QUIZ_SORU_SAYILARI = [5, 10, 15];
+
+app.post('/quiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), async (req, res) => {
   try {
-    const { konu, zorluk = 'orta', kacinilacakSorular = [], mod = 'sozel', dil } = req.body;
+    const { konu, zorluk = 'orta', mod = 'sozel', dil, soruSayisi } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
+
+    const N = GECERLI_QUIZ_SORU_SAYILARI.includes(soruSayisi) ? soruSayisi : 10;
+    const krediMaliyeti = N * KREDI_QUIZ_SORU_BASI;
+
+    try {
+      await krediDus(req.uid, krediMaliyeti, req.misafirMi);
+    } catch (krediHatasi) {
+      if (krediHatasi.message === 'YETERSIZ_KREDI') {
+        return res.status(402).json({
+          hata: 'Yetersiz kredi.', kod: 'YETERSIZ_KREDI', kalanKredi: krediHatasi.kalanKredi,
+        });
+      }
+      throw krediHatasi;
+    }
 
     const dilAdlari = { 'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish' };
     const appDili = dilAdlari[dil] || 'English';
-
-    const kacinmaMetni = kacinilacakSorular.length > 0
-      ? `\n\nIMPORTANT: Do NOT ask these questions again, generate a different one:\n${kacinilacakSorular.map((s, i) => `${i+1}. ${s}`).join('\n')}`
-      : '';
 
     const sayisalMi = mod === 'sayisal';
     const otoMi = mod === 'oto';
 
     const gorselTalimati = sayisalMi ? `
 
-Bu bir SAYISAL/GÖRSEL sorudur (Numerical Quiz). Kurallar:
+Bu SAYISAL/GÖRSEL sorulardır (Numerical Quiz). Her soru için kurallar:
 - Soru gerçek bir hesaplama/problem çözme gerektirmeli — sözel bir tanım sorusu DEĞİL.
-- Sorudaki HER matematiksel ifade (formül, denklem, üs, kesir, birim) LaTeX ile yazılmalı: satır içi "$...$", blok "$$...$$" formatında. Örnek: "Bir cismin hızı $v = 10 \\text{ m/s}$ ise..."
-- ÖNEMLİ: Soru bir geometrik şekil (üçgen, dörtgen, çember, açı), koordinat düzlemi, fonksiyon grafiği (parabol, doğru, sinüs), fizik düzeneği (kuvvet diyagramı, devre, mercek) veya sayı doğrusu ARALIĞI içeriyorsa, bunu SÖZEL olarak tarif etmek YETMEZ — mutlaka SVG ile GERÇEKTEN ÇİZ. Öğrenci şekli görmeden çözemeyeceği bir soruda görseli atlaman ciddi bir hatadır.
-- Çizim için, "soru" metninin İÇİNE, en sona şunu ekle:
+- Sorudaki HER matematiksel ifade (formül, denklem, üs, kesir, birim) LaTeX ile yazılmalı: satır içi "$...$", blok "$$...$$" formatında.
+- ÖNEMLİ: Soru bir geometrik şekil, koordinat düzlemi, fonksiyon grafiği, fizik düzeneği veya sayı doğrusu ARALIĞI içeriyorsa, bunu SÖZEL olarak tarif etmek YETMEZ — mutlaka SVG ile GERÇEKTEN ÇİZ. Çizim için, "soru" metninin İÇİNE, en sona şunu ekle:
   [GORSEL_SVG]<svg viewBox="0 0 W H" xmlns="http://www.w3.org/2000/svg">...</svg>[/GORSEL_SVG]
-  Kurallar: viewBox mutlaka olsun (örn. "0 0 300 200"). Sadece <line>, <circle>, <rect>, <polygon>, <polyline>, <path>, <text>, <ellipse> kullan — script/image/foreignObject/harici link YASAK. Ana şekil/vurgu için "#6C63FF", eksen/etiket/ikincil çizgiler için "#EEE9FF" kullan. Arka plan dikdörtgeni EKLEME (şeffaf kalsın, kart zaten koyu renkte). Ölçü/koordinat/değişken etiketlerini <text fill="#EEE9FF"> ile ekle. KOMPAKT tut: koordinatlarda tam sayı ya da en fazla 1 ondalık basamak kullan (örn. "42.5", "42.4837291" değil), gereksiz özniteliklerden kaçın, ~5-12 elementi geçme.
-  Örnek (dik üçgen): [GORSEL_SVG]<svg viewBox="0 0 200 160" xmlns="http://www.w3.org/2000/svg"><polygon points="20,140 180,140 20,20" fill="#6C63FF" fill-opacity="0.12" stroke="#6C63FF" stroke-width="2.5"/><text x="90" y="155" fill="#EEE9FF" font-size="13">8 cm</text><text x="4" y="85" fill="#EEE9FF" font-size="13">6 cm</text></svg>[/GORSEL_SVG]
-- Sadece konu gerçekten soyut/sayısal ve görselin hiçbir katkısı olmayacaksa (örn. basit bir yüzde hesabı) SVG'yi atla — ama şekil/koordinat/grafik/düzenek geçen HER soruda mutlaka kullan.
-- Cevap seçenekleri SAYISAL değerler olmalı (gerekirse birimle birlikte), sözel ifadeler değil.
-- Açıklama (aciklama), çözümün kısa adımlarını LaTeX ile göstermeli.` : '';
+  Kurallar: viewBox mutlaka olsun. Sadece <line>, <circle>, <rect>, <polygon>, <polyline>, <path>, <text>, <ellipse> kullan. Ana renk "#6C63FF", ikincil "#EEE9FF". Arka plan dikdörtgeni ekleme. KOMPAKT tut: ~5-12 elementi geçme.
+- Sadece konu gerçekten soyut/sayısal ve görselin hiçbir katkısı olmayacaksa SVG'yi atla.
+- Cevap seçenekleri SAYISAL değerler olmalı, sözel ifadeler değil.
+- Açıklama, çözümün kısa adımlarını LaTeX ile göstermeli.` : '';
 
-    // OTO MOD: kullanıcı bir ders kartına dokunup konuyu yazdığında,
-    // hangi modun (sözel/sayısal) uygun olduğuna KULLANICI DEĞİL, AI
-    // kendisi karar veriyor — konunun doğasına göre. Model önce kendi
-    // içinde "bu sayısal mı sözel mi" diye karar veriyor, sonra ona göre
-    // ya hesaplama/SVG kurallarını ya da normal kavramsal soru kuralını
-    // uyguluyor. Aynı SVG/LaTeX kuralları burada da geçerli.
     const otoTalimati = otoMi ? `
 
-Bu konu için ÖNCE kendi kendine karar ver: bu soru doğası gereği SAYISAL/HESAPLAMA gerektiren bir konu mu (matematik, fizik, kimya hesaplamaları, geometri gibi) yoksa SÖZEL/KAVRAMSAL bir konu mu (tarih, dil, biyoloji tanımları, olaylar gibi)?
+Her soru için ÖNCE kendi kendine karar ver: bu soru doğası gereği SAYISAL/HESAPLAMA gerektiren bir konu mu yoksa SÖZEL/KAVRAMSAL bir konu mu?
 
-Eğer SAYISAL ise:
-- Gerçek bir hesaplama/problem çözme sorusu sor.
-- HER matematiksel ifadeyi LaTeX ile yaz: satır içi "$...$", blok "$$...$$".
-- Soru bir geometrik şekil, koordinat düzlemi, grafik, fizik düzeneği içeriyorsa mutlaka [GORSEL_SVG]<svg viewBox="0 0 W H" xmlns="http://www.w3.org/2000/svg">...</svg>[/GORSEL_SVG] ile ÇİZ (sadece <line>,<circle>,<rect>,<polygon>,<polyline>,<path>,<text>,<ellipse>; ana renk #6C63FF, ikincil #EEE9FF, arka plan ekleme, kompakt koordinatlar).
-- Cevap seçenekleri sayısal değerler olsun.
+Eğer SAYISAL ise: gerçek bir hesaplama sorusu sor, HER matematiksel ifadeyi LaTeX ile yaz, geometrik/grafiksel bir şey içeriyorsa [GORSEL_SVG]<svg viewBox="0 0 W H" xmlns="http://www.w3.org/2000/svg">...</svg>[/GORSEL_SVG] ile çiz (sadece temel SVG etiketleri, ana renk #6C63FF, ikincil #EEE9FF), cevap seçenekleri sayısal olsun.
 
-Eğer SÖZEL ise:
-- Normal bir kavramsal/tanım/olay sorusu sor, SVG ya da LaTeX kullanma (gerekmedikçe).
-- Cevap seçenekleri metin ifadeler olsun.` : '';
+Eğer SÖZEL ise: normal bir kavramsal/tanım/olay sorusu sor, SVG/LaTeX kullanma, cevap seçenekleri metin olsun.
 
-    const prompt = `You are a tutor. Create a ${zorluk === 'kolay' ? 'easy' : zorluk === 'zor' ? 'hard' : 'medium'} difficulty exam question about: "${konu}"${kacinmaMetni}${gorselTalimati}${otoTalimati}
+Farklı sorular farklı türde (bazısı sayısal bazısı sözel) olabilir — konunun kendi doğasına göre karar ver.` : '';
 
-Respond ONLY in ${appDili}, in this exact JSON format, no other text:
+    const prompt = `You are a tutor. Create EXACTLY ${N} DIFFERENT ${zorluk === 'kolay' ? 'easy' : zorluk === 'zor' ? 'hard' : 'medium'} difficulty exam questions about: "${konu}"${gorselTalimati}${otoTalimati}
+
+CRITICAL — VARIETY: All ${N} questions must be meaningfully different from each other. Cover different sub-aspects, facts, or angles within the topic. NEVER repeat the same question with just different numbers swapped in, and never ask two near-duplicate questions testing the exact same narrow point. Vary the specific concept tested, the phrasing, and (where relevant) the scenario/numbers used, across all ${N} questions.
+
+Respond ONLY in ${appDili}, with a JSON object of this EXACT shape, no other text:
 {
-  "soru": "the question text here",
-  "secenekler": ["A) option", "B) option", "C) option", "D) option"],
-  "dogruCevap": "A) option",
-  "aciklama": "why this answer is correct, short explanation"
+  "sorular": [
+    {
+      "soru": "the question text here",
+      "secenekler": ["A) option", "B) option", "C) option", "D) option"],
+      "dogruCevap": "A) option",
+      "aciklama": "why this answer is correct, short explanation"
+    }
+  ]
 }
+The "sorular" array must contain exactly ${N} question objects. If you prefer an open-ended question for a specific item, leave its secenekler as an empty array. Each question has exactly one correct answer. Keep each aciklama to 1-2 sentences.`;
 
-If you prefer an open-ended question, leave secenekler as an empty array: "secenekler": []
-Each question has exactly one correct answer. Keep aciklama to 1-2 sentences.`;
+    // Toplu (N soruluk) üretim, tek soruya göre çok daha fazla çıktı
+    // token'ı gerektiriyor — paylaşılan modelSistemsiz/ucuzModel'in
+    // varsayılan token tavanları (2048-4096) 15 soru + olası SVG'ler
+    // için yetersiz kalabilir. Bu yüzden bu istek için özel, daha
+    // geniş bir tavanlı model örneği kullanıyoruz.
+    const quizToplouModeli = genAI.getGenerativeModel({
+      model: (sayisalMi || otoMi) ? 'gemini-3.7-flash' : 'gemini-3.5-flash-lite',
+      generationConfig: { maxOutputTokens: 8192 },
+    });
 
-    // oto modda model, konunun sayısal mı sözel mi olduğuna kendi karar
-    // verdiği için — sayısal modla aynı yüksek kaliteli modeli kullanıyoruz
-    // (ucuz model bu tür bir muhakeme + olası SVG üretimi için yetersiz kalabilir)
-    const kullanilacakModel = (sayisalMi || otoMi) ? modelSistemsiz : ucuzModel;
-    const result = await kullanilacakModel.generateContent(prompt);
+    const result = await quizToplouModeli.generateContent(prompt);
     const text = result.response.text().replace(/```json|```/g, '').trim();
-    const soru = _jsonGuvenliAyristir(text);
+    const veri = _jsonGuvenliAyristir(text);
+    const sorular = Array.isArray(veri.sorular) ? veri.sorular : [];
 
-    if ((sayisalMi || otoMi) && typeof soru.soru === 'string') {
-      const gorselSvg = _gorselSvgAyikla(soru.soru);
-      if (gorselSvg) {
-        soru.gorselSvg = gorselSvg;
-        soru.soru = _gorselSvgTemizle(soru.soru).trim();
+    if (sayisalMi || otoMi) {
+      for (const soru of sorular) {
+        if (typeof soru.soru === 'string') {
+          const gorselSvg = _gorselSvgAyikla(soru.soru);
+          if (gorselSvg) {
+            soru.gorselSvg = gorselSvg;
+            soru.soru = _gorselSvgTemizle(soru.soru).trim();
+          }
+        }
       }
     }
 
     gunlukIstatistigiArtir('quizOlusturma');
-    res.json(soru);
+    res.json({ sorular });
   } catch (hata) {
     console.error('Quiz soru hatası:', hata);
-    res.status(500).json({ hata: 'Quiz sorusu oluşturulamadı.' });
+    res.status(500).json({ hata: 'Quiz soruları oluşturulamadı.' });
   }
 });
 
