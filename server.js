@@ -57,7 +57,7 @@ async function kimlikDogrula(req, res, next) {
   }
 }
 
-const MISAFIR_MAKS_KREDI = 100;
+const MISAFIR_MAKS_KREDI = 50;
 const MISAFIR_SAATLIK_YENILENME = 15;
 const UCRETSIZ_MAKS_KREDI = 200;
 const UCRETSIZ_SAATLIK_YENILENME = 50;
@@ -1284,21 +1284,28 @@ const GECERLI_QUIZ_SORU_SAYILARI = [5, 10, 15];
 
 app.post('/quiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), async (req, res) => {
   try {
-    const { konu, zorluk = 'orta', mod = 'sozel', dil, soruSayisi } = req.body;
+    const { konu, zorluk = 'orta', mod = 'sozel', dil, soruSayisi, ilkTanismaDiagnostigi } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
 
     const N = GECERLI_QUIZ_SORU_SAYILARI.includes(soruSayisi) ? soruSayisi : 10;
     const krediMaliyeti = N * KREDI_QUIZ_SORU_BASI;
 
-    try {
-      await krediDus(req.uid, krediMaliyeti, req.misafirMi);
-    } catch (krediHatasi) {
-      if (krediHatasi.message === 'YETERSIZ_KREDI') {
-        return res.status(402).json({
-          hata: 'Yetersiz kredi.', kod: 'YETERSIZ_KREDI', kalanKredi: krediHatasi.kalanKredi,
-        });
+    // İLK TANIŞMA (onboarding) sırasındaki ZORUNLU 5 soruluk diagnostik
+    // quiz — kullanıcı henüz uygulamayı hiç kullanmadan, tüm başlangıç
+    // kredisini bu tek adımda bitirmesin diye ÜCRETSİZ. Sadece bu özel
+    // bayrakla (sadece İlkTanışma ekranından gönderiliyor) işaretlenen
+    // istek için kredi düşülmüyor.
+    if (ilkTanismaDiagnostigi !== true) {
+      try {
+        await krediDus(req.uid, krediMaliyeti, req.misafirMi);
+      } catch (krediHatasi) {
+        if (krediHatasi.message === 'YETERSIZ_KREDI') {
+          return res.status(402).json({
+            hata: 'Yetersiz kredi.', kod: 'YETERSIZ_KREDI', kalanKredi: krediHatasi.kalanKredi,
+          });
+        }
+        throw krediHatasi;
       }
-      throw krediHatasi;
     }
 
     const dilAdlari = { 'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish' };
@@ -1449,7 +1456,7 @@ Rules:
 
 app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), async (req, res) => {
   try {
-    const { konu, seviye, dil, sinavTarihi, teshisYuzdesi, teshisDetaylari } = req.body;
+    const { konu, seviye, dil, sinavTarihi, teshisYuzdesi, teshisDetaylari, ilkTanismaDiagnostigi } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
 
     const dilAdlari = { 'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish' };
@@ -1532,15 +1539,20 @@ Rules:
     // (/arastir'daki ile aynı desen) — önceden middleware üretim
     // denemeden ÖNCE düşüyordu, bu da zaman aşımı/hata durumunda
     // kullanıcının hiçbir şey almadan kredi kaybetmesine yol açıyordu.
-    try {
-      await krediDus(req.uid, 50, req.misafirMi);
-    } catch (krediHatasi) {
-      if (krediHatasi.message === 'YETERSIZ_KREDI') {
-        return res.status(402).json({
-          hata: 'Yetersiz kredi.', kod: 'YETERSIZ_KREDI', kalanKredi: krediHatasi.kalanKredi,
-        });
+    // İLK TANIŞMA (onboarding) sırasında oluşturulan İLK plan da —
+    // diagnostik quiz gibi — ÜCRETSİZ, kullanıcı daha uygulamayı hiç
+    // kullanmadan tüm başlangıç kredisini bitirmesin diye.
+    if (ilkTanismaDiagnostigi !== true) {
+      try {
+        await krediDus(req.uid, 50, req.misafirMi);
+      } catch (krediHatasi) {
+        if (krediHatasi.message === 'YETERSIZ_KREDI') {
+          return res.status(402).json({
+            hata: 'Yetersiz kredi.', kod: 'YETERSIZ_KREDI', kalanKredi: krediHatasi.kalanKredi,
+          });
+        }
+        throw krediHatasi;
       }
-      throw krediHatasi;
     }
 
     gunlukIstatistigiArtir('ogrenmePlani');
