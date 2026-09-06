@@ -57,7 +57,7 @@ async function kimlikDogrula(req, res, next) {
   }
 }
 
-const MISAFIR_MAKS_KREDI = 50;
+const MISAFIR_MAKS_KREDI = 100;
 const MISAFIR_SAATLIK_YENILENME = 15;
 const UCRETSIZ_MAKS_KREDI = 200;
 const UCRETSIZ_SAATLIK_YENILENME = 50;
@@ -1851,11 +1851,15 @@ const ARASTIRMA_ONBELLEK_SURESI = 60 * 60 * 1000;
 
 app.post('/arastir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MAKS_KONU_UZUNLUGU), async (req, res) => {
   try {
-    const { konu, dil } = req.body;
+    const { konu, dil, derinlik } = req.body;
     if (!konu) return res.status(400).json({ hata: 'Konu gerekli.' });
 
+    // YENİ: kullanıcı artık "Basit" (ELI5 tarzı) ya da "Detaylı" (kapsamlı)
+    // özet seçebiliyor — önbellek anahtarına da eklendi, ikisi ayrı cache'leniyor.
+    const derinlikGecerli = ['basit', 'detayli'].includes(derinlik) ? derinlik : 'normal';
+
     const anahtarKonu = konu.trim().toLowerCase();
-    const onbellekAnahtari = `${dil || 'en'}:${anahtarKonu}`;
+    const onbellekAnahtari = `${dil || 'en'}:${derinlikGecerli}:${anahtarKonu}`;
     const simdi = Date.now();
 
     const onbellekteki = _arastirmaOnbellek.get(onbellekAnahtari);
@@ -1885,9 +1889,15 @@ app.post('/arastir', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu',
     const dilAdlari = { 'en': 'English', 'de': 'German', 'fr': 'French', 'es': 'Spanish', 'tr': 'Turkish' };
     const appDili = dilAdlari[dil] || 'English';
 
+    const derinlikTalimati = derinlikGecerli === 'basit'
+      ? 'Write the summary as if explaining to a complete beginner with no background — use simple everyday words, short sentences, and a concrete analogy if it helps. Keep it to 3-4 short sentences.'
+      : derinlikGecerli === 'detayli'
+        ? 'Write a thorough, well-structured summary (6-9 sentences) covering the core concept, how it works or why it matters, and one nuance or common misconception. Assume the reader already has basic familiarity with the general subject area.'
+        : 'Write a clear 3-4 sentence summary of the topic.';
+
     const prompt = `Research the topic "${konu}" and respond ONLY in ${appDili}, in this exact JSON format:
 {
-  "ozet": "a clear 3-4 sentence summary of the topic",
+  "ozet": "the summary — ${derinlikTalimati}",
   "kaynaklar": [
     {"baslik": "source title", "url": "https://...", "aciklama": "1 sentence description"}
   ],
@@ -1900,11 +1910,11 @@ Max 5 sources. Pick reliable sources useful for a student (Wikipedia, Khan Acade
 
     try {
       const veri = _jsonGuvenliAyristir(text);
-      const sonucVeri = { ...veri, konu };
+      const sonucVeri = { ...veri, konu, derinlik: derinlikGecerli };
       _arastirmaOnbellek.set(onbellekAnahtari, { veri: sonucVeri, zaman: simdi });
       res.json(sonucVeri);
     } catch {
-      res.json({ konu, ozet: text.substring(0, 400), kaynaklar: [], sorular: [] });
+      res.json({ konu, ozet: text.substring(0, 400), kaynaklar: [], sorular: [], derinlik: derinlikGecerli });
     }
   } catch (hata) {
     console.error('Araştırma hatası:', hata);
