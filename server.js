@@ -2049,6 +2049,23 @@ app.post('/satin-alma-dogrula', aiIstekSiniri, kimlikDogrula, async (req, res) =
 app.post('/hesabimi-sil', aiIstekSiniri, kimlikDogrula, async (req, res) => {
   try {
     const uid = req.uid;
+
+    // DÜZELTME: önceden sadece 'kullanicilar' dokümanı siliniyordu — ama
+    // kullanıcıya ait veri iki AYRI koleksiyonda daha duruyordu
+    // (sohbet_geri_bildirimleri: soru/cevap metni içeriyor;
+    // islenmis_reklam_odulleri: reklam ödülü kayıtları). Hesap silme artık
+    // GERÇEKTEN tüm kullanıcı verisini temizliyor.
+    const silinecekKoleksiyonlar = [
+      { ad: 'sohbet_geri_bildirimleri', alan: 'uid' },
+      { ad: 'islenmis_reklam_odulleri', alan: 'userId' },
+    ];
+    for (const { ad, alan } of silinecekKoleksiyonlar) {
+      const anlikGoruntu = await db.collection(ad).where(alan, '==', String(uid)).get();
+      const toplu = db.batch();
+      anlikGoruntu.docs.forEach((dok) => toplu.delete(dok.ref));
+      if (!anlikGoruntu.empty) await toplu.commit();
+    }
+
     await db.collection('kullanicilar').doc(String(uid)).delete();
     await admin.auth().deleteUser(uid);
     res.json({ basarili: true });
