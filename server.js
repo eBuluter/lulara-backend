@@ -2005,12 +2005,18 @@ app.post('/satin-alma-dogrula', aiIstekSiniri, kimlikDogrula, async (req, res) =
     const kullaniciRef = db.collection('kullanicilar').doc(String(req.uid));
 
     if (urunId === URUN_PREMIUM_AYLIK) {
-      const sonuc = await yayinciApi.purchases.subscriptions.get({
+      // DÜZELTME: purchases.subscriptions.get Google tarafından tamamen
+      // kaldırıldı (deprecated → artık fonksiyon olarak bile mevcut
+      // değil, "is not a function" hatası veriyordu). Yerine
+      // purchases.subscriptionsv2.get kullanılıyor — farklı parametreler
+      // (subscriptionId artık YOK) ve farklı bir yanıt yapısı var
+      // (paymentState yerine subscriptionState).
+      const sonuc = await yayinciApi.purchases.subscriptionsv2.get({
         packageName: PAKET_ADI,
-        subscriptionId: urunId,
         token: satinAlmaTokeni,
       });
-      const gecerliMi = sonuc.data.paymentState === 1 || sonuc.data.paymentState === 2;
+      const durum = sonuc.data.subscriptionState;
+      const gecerliMi = durum === 'SUBSCRIPTION_STATE_ACTIVE' || durum === 'SUBSCRIPTION_STATE_IN_GRACE_PERIOD';
       if (!gecerliMi) return res.status(400).json({ hata: 'Abonelik geçerli değil.' });
 
       await kullaniciRef.set({ premium: true, premiumSonKontrol: Date.now() }, { merge: true });
