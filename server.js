@@ -2019,7 +2019,18 @@ app.post('/satin-alma-dogrula', aiIstekSiniri, kimlikDogrula, async (req, res) =
       const gecerliMi = durum === 'SUBSCRIPTION_STATE_ACTIVE' || durum === 'SUBSCRIPTION_STATE_IN_GRACE_PERIOD';
       if (!gecerliMi) return res.status(400).json({ hata: 'Abonelik geçerli değil.' });
 
-      await kullaniciRef.set({ premium: true, premiumSonKontrol: Date.now() }, { merge: true });
+      // DÜZELTME: Premium'a geçince sadece "premium: true" işaretleniyordu,
+      // kredi bakiyesine hiç dokunulmuyordu — kullanıcı önceden az
+      // kredisi varsa Premium olduktan sonra da aynı düşük bakiyede
+      // kalıyordu, sadece TAVAN 2000'e çıkıyordu (anında dolmuyordu).
+      // Artık Premium'a geçişte kredi de anında tavana (2000) tamamlanıyor
+      // — gerçek bir "hoş geldin" hissi versin diye.
+      await kullaniciRef.set({
+        premium: true,
+        premiumSonKontrol: Date.now(),
+        kredi: PREMIUM_MAKS_KREDI,
+        sonYenilenmeZamani: Date.now(),
+      }, { merge: true });
     } else if (URUN_KREDI_MIKTARLARI[urunId]) {
       const sonuc = await yayinciApi.purchases.products.get({
         packageName: PAKET_ADI,
