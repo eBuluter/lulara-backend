@@ -280,6 +280,114 @@ app.post('/streak-freeze-kullan', kimlikDogrula, async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------
+// DAVET SİSTEMİ (referral) — bir kullanıcı 5 arkadaşını başarıyla davet
+// edince 1000 kredi kazanıyor. Her kullanıcının kendi kısa (6 haneli)
+// davet kodu var — 'davet_kodlari' koleksiyonunda kod -> uid eşlemesi
+// tutuluyor, 'kullanicilar/{uid}' dokümanında da kendi kodu ve kaç
+// başarılı daveti olduğu saklanıyor.
+// ---------------------------------------------------------
+const DAVET_KODU_KARAKTERLERI = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // 0,O,1,I çıkarıldı - karışmasın diye
+const DAVET_HEDEF_ARKADAS_SAYISI = 5;
+const DAVET_ODUL_KREDISI = 1000;
+
+function _rastgeleDavetKoduUret() {
+  let kod = '';
+  const rastgeleBaytlar = crypto.randomBytes(6);
+  for (let i = 0; i < 6; i++) {
+    kod += DAVET_KODU_KARAKTERLERI[rastgeleBaytlar[i] % DAVET_KODU_KARAKTERLERI.length];
+  }
+  return kod;
+}
+
+async function _kullanicininDavetKodunuGetirYaDaOlustur(uid) {
+  const kullaniciRef = db.collection('kullanicilar').doc(String(uid));
+  const dok = await kullaniciRef.get();
+  const veri = dok.exists ? dok.data() : {};
+  if (veri.davetKodum) return veri.davetKodum;
+
+  // Çok düşük ihtimalli çakışmalar için birkaç kez dene.
+  for (let deneme = 0; deneme < 5; deneme++) {
+    const adayKod = _rastgeleDavetKoduUret();
+    const kodRef = db.collection('davet_kodlari').doc(adayKod);
+    const kodDok = await kodRef.get();
+    if (!kodDok.exists) {
+      await kodRef.set({ uid: String(uid) });
+      await kullaniciRef.set({ davetKodum: adayKod }, { merge: true });
+      return adayKod;
+    }
+  }
+  throw new Error('DAVET_KODU_URETILEMEDI');
+}
+
+app.get('/davet-durumu', kimlikDogrula, async (req, res) => {
+  try {
+    const kod = await _kullanicininDavetKodunuGetirYaDaOlustur(req.uid);
+    const kullaniciRef = db.collection('kullanicilar').doc(String(req.uid));
+    const dok = await kullaniciRef.get();
+    const veri = dok.exists ? dok.data() : {};
+    const basariliSayisi = veri.basariliDavetSayisi || 0;
+    const buTurdakiIlerleme = basariliSayisi % DAVET_HEDEF_ARKADAS_SAYISI;
+    res.json({
+      davetKodum: kod,
+      basariliDavetSayisi: basariliSayisi,
+      buTurdakiIlerleme,
+      hedefArkadasSayisi: DAVET_HEDEF_ARKADAS_SAYISI,
+      kazanilanOdulSayisi: Math.floor(basariliSayisi / DAVET_HEDEF_ARKADAS_SAYISI),
+    });
+  } catch (hata) {
+    console.error('Davet durumu hatası:', hata);
+    res.status(500).json({ hata: 'Davet durumu alınamadı.' });
+  }
+});
+
+app.post('/davet-kodu-uygula', kimlikDogrula, alanUzunlugunuSinirla('kod', 20), async (req, res) => {
+  try {
+    const kodGirisi = (req.body.kod || '').toString().trim().toUpperCase();
+    if (!kodGirisi) return res.status(400).json({ hata: 'Davet kodu gerekli.' });
+
+    const kendiRef = db.collection('kullanicilar').doc(String(req.uid));
+    const kendiDok = await kendiRef.get();
+    const kendiVeri = kendiDok.exists ? kendiDok.data() : {};
+    if (kendiVeri.davetEden) {
+      return res.status(400).json({ hata: 'Zaten bir davet kodu kullandın.', kod: 'ZATEN_KULLANILDI' });
+    }
+
+    const kodRef = db.collection('davet_kodlari').doc(kodGirisi);
+    const kodDok = await kodRef.get();
+    if (!kodDok.exists) {
+      return res.status(404).json({ hata: 'Geçersiz davet kodu.', kod: 'KOD_BULUNAMADI' });
+    }
+
+    const davetEdenUid = kodDok.data().uid;
+    if (davetEdenUid === String(req.uid)) {
+      return res.status(400).json({ hata: 'Kendi kodunu kullanamazsın.', kod: 'KENDI_KODU' });
+    }
+
+    await kendiRef.set({ davetEden: davetEdenUid, davetTarihi: Date.now() }, { merge: true });
+
+    const davetEdenRef = db.collection('kullanicilar').doc(davetEdenUid);
+    let yeniOdulKazanildiMi = false;
+    await db.runTransaction(async (t) => {
+      const davetEdenDok = await t.get(davetEdenRef);
+      let veri = davetEdenDok.exists ? davetEdenDok.data() : varsayilanKrediVerisi();
+      veri = krediYenile(veri);
+      const yeniSayi = (veri.basariliDavetSayisi || 0) + 1;
+      veri.basariliDavetSayisi = yeniSayi;
+      if (yeniSayi % DAVET_HEDEF_ARKADAS_SAYISI === 0) {
+        veri.kredi = (veri.kredi || 0) + DAVET_ODUL_KREDISI;
+        yeniOdulKazanildiMi = true;
+      }
+      t.set(davetEdenRef, veri, { merge: true });
+    });
+
+    res.json({ basarili: true, odulKazanildiMi: yeniOdulKazanildiMi });
+  } catch (hata) {
+    console.error('Davet kodu uygulama hatası:', hata);
+    res.status(500).json({ hata: 'Davet kodu uygulanamadı.' });
+  }
+});
+
 const ADMOB_ANAHTAR_ADRESI = 'https://www.gstatic.com/admob/reward/verifier-keys.json';
 const REKLAM_ODUL_MIKTARI = 100;
 const REKLAM_GUNLUK_LIMIT = 6;
