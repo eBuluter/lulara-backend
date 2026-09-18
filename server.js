@@ -343,6 +343,19 @@ app.get('/davet-durumu', kimlikDogrula, async (req, res) => {
 
 app.post('/davet-kodu-uygula', kimlikDogrula, alanUzunlugunuSinirla('kod', 20), async (req, res) => {
   try {
+    // GÜVENLİK: misafir (anonim) hesaplar davet kodu UYGULAYAMAZ. Aksi
+    // halde biri uygulamayı silip yeniden kurarak (veya uygulama verisini
+    // temizleyerek) sınırsız "temiz" misafir UID'si üretip aynı arkadaş
+    // kodunu tekrar tekrar girebilir — gerçek arkadaş olmadan davet
+    // edene sınırsız 1000 kredi kazandırabilirdi. Gerçek bir hesaba
+    // (Google/e-posta) geçiş şart koşularak bu istismar zorlaştırılıyor.
+    if (req.misafirMi) {
+      return res.status(403).json({
+        hata: 'Davet kodu girmek için önce hesabına giriş yapmalısın.',
+        kod: 'MISAFIR_KOD_GIREMEZ',
+      });
+    }
+
     const kodGirisi = (req.body.kod || '').toString().trim().toUpperCase();
     if (!kodGirisi) return res.status(400).json({ hata: 'Davet kodu gerekli.' });
 
