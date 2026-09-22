@@ -341,6 +341,27 @@ app.get('/davet-durumu', kimlikDogrula, async (req, res) => {
   }
 });
 
+// İlk Tanışma (onboarding) sırasında kullanıcının kendi girdiği isim ve
+// eğitim seviyesini kaydeder. Misafir hesaplarda da çalışır — onboarding
+// sessiz bir anonim hesapla başlıyor, isim yine de saklanmalı.
+app.post('/profil-guncelle', kimlikDogrula, alanUzunlugunuSinirla('isim', 60), async (req, res) => {
+  try {
+    const isim = (req.body.isim || '').toString().trim().substring(0, 60);
+    const egitimSeviyesi = (req.body.egitimSeviyesi || '').toString().trim().substring(0, 20);
+    const guncelleme = {};
+    if (isim) guncelleme.isim = isim;
+    if (egitimSeviyesi) guncelleme.egitimSeviyesi = egitimSeviyesi;
+    if (Object.keys(guncelleme).length === 0) {
+      return res.status(400).json({ hata: 'Güncellenecek bir alan yok.' });
+    }
+    await db.collection('kullanicilar').doc(String(req.uid)).set(guncelleme, { merge: true });
+    res.json({ basarili: true });
+  } catch (hata) {
+    console.error('Profil güncelleme hatası:', hata);
+    res.status(500).json({ hata: 'Profil güncellenemedi.' });
+  }
+});
+
 app.post('/davet-kodu-uygula', kimlikDogrula, alanUzunlugunuSinirla('kod', 20), async (req, res) => {
   try {
     // GÜVENLİK: misafir (anonim) hesaplar davet kodu UYGULAYAMAZ. Aksi
