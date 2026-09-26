@@ -2416,6 +2416,10 @@ app.post('/hesabimi-sil', aiIstekSiniri, kimlikDogrula, async (req, res) => {
       if (!anlikGoruntu.empty) await toplu.commit();
     }
 
+    // Bulutta yedeklenen sohbet, not ve planlar (kullanici_verileri/{uid}
+    // altındaki tüm alt koleksiyonlar) — Google Play'in veri silme kuralı.
+    await db.recursiveDelete(db.collection('kullanici_verileri').doc(String(uid)));
+
     await db.collection('kullanicilar').doc(String(uid)).delete();
     await admin.auth().deleteUser(uid);
     res.json({ basarili: true });
