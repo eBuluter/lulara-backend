@@ -99,6 +99,19 @@ function varsayilanKrediVerisi(misafirMi = false) {
   };
 }
 
+// Kullanıcı belgesini kredi işlemleri için hazırlar. Belge HİÇ yoksa ya da
+// var ama kredi alanları hiç kurulmamışsa (ör. /profil-guncelle veya davet
+// kodu oluşturma, kredi başlatılmadan ÖNCE belgeyi yarattıysa), eksik alanları
+// varsayılanlarla tamamlar. Bu olmadan böyle belgelerde `kredi` undefined
+// kalıyor, ilk düşüm NaN üretiyor ve kullanıcı 0 krediyle kalıyordu. Kredisi
+// zaten NaN'a dönmüş eski belgeleri de başlangıç kredisine onarır.
+function krediVerisiniHazirla(dokuman, misafirMi = false) {
+  const veri = dokuman.exists ? dokuman.data() : {};
+  if (typeof veri.kredi === 'number' && Number.isFinite(veri.kredi)) return veri;
+  const varsayilan = varsayilanKrediVerisi(misafirMi);
+  return { ...varsayilan, ...veri, kredi: varsayilan.kredi };
+}
+
 function misafirDurumunuGuncelle(veri, gercekMisafirMi) {
   if (veri.misafir === true && gercekMisafirMi === false) {
     veri.misafir = false;
@@ -110,7 +123,7 @@ async function krediDus(uid, miktar, misafirMi = false) {
   const ref = db.collection('kullanicilar').doc(uid);
   return db.runTransaction(async (t) => {
     const dokuman = await t.get(ref);
-    let veri = dokuman.exists ? dokuman.data() : varsayilanKrediVerisi(misafirMi);
+    let veri = krediVerisiniHazirla(dokuman, misafirMi);
     veri = misafirDurumunuGuncelle(veri, misafirMi);
     veri = krediYenile(veri);
 
@@ -226,7 +239,7 @@ app.get('/kredi-durumu', kimlikDogrula, async (req, res) => {
   try {
     const ref = db.collection('kullanicilar').doc(req.uid);
     const dokuman = await ref.get();
-    let veri = dokuman.exists ? dokuman.data() : varsayilanKrediVerisi(req.misafirMi);
+    let veri = krediVerisiniHazirla(dokuman, req.misafirMi);
     veri = misafirDurumunuGuncelle(veri, req.misafirMi);
     veri = krediYenile(veri);
     await ref.set(veri, { merge: true });
@@ -260,7 +273,7 @@ app.post('/streak-freeze-kullan', kimlikDogrula, async (req, res) => {
 
     await db.runTransaction(async (t) => {
       const dok = await t.get(ref);
-      let veri = dok.exists ? dok.data() : varsayilanKrediVerisi(req.misafirMi);
+      let veri = krediVerisiniHazirla(dok, req.misafirMi);
       const mevcutHak = veri.streakFreezeHakki || 0;
 
       if (mevcutHak > 0) {
@@ -354,7 +367,15 @@ app.post('/profil-guncelle', kimlikDogrula, alanUzunlugunuSinirla('isim', 60), a
     if (Object.keys(guncelleme).length === 0) {
       return res.status(400).json({ hata: 'Güncellenecek bir alan yok.' });
     }
-    await db.collection('kullanicilar').doc(String(req.uid)).set(guncelleme, { merge: true });
+    // Onboarding'de bu çoğu zaman yeni kullanıcının İLK backend yazımı —
+    // belge henüz yoksa kredi alanlarıyla birlikte oluşturuyoruz; yoksa
+    // kullanıcı başlangıç kredisini hiç almıyordu.
+    const ref = db.collection('kullanicilar').doc(String(req.uid));
+    await db.runTransaction(async (t) => {
+      const dok = await t.get(ref);
+      const temel = dok.exists ? {} : varsayilanKrediVerisi(req.misafirMi);
+      t.set(ref, { ...temel, ...guncelleme }, { merge: true });
+    });
     res.json({ basarili: true });
   } catch (hata) {
     console.error('Profil güncelleme hatası:', hata);
@@ -404,7 +425,7 @@ app.post('/davet-kodu-uygula', kimlikDogrula, alanUzunlugunuSinirla('kod', 20), 
     let yeniOdulKazanildiMi = false;
     await db.runTransaction(async (t) => {
       const davetEdenDok = await t.get(davetEdenRef);
-      let veri = davetEdenDok.exists ? davetEdenDok.data() : varsayilanKrediVerisi();
+      let veri = krediVerisiniHazirla(davetEdenDok);
       veri = krediYenile(veri);
       const yeniSayi = (veri.basariliDavetSayisi || 0) + 1;
       veri.basariliDavetSayisi = yeniSayi;
@@ -509,7 +530,7 @@ app.get('/reklam-ssv-callback', async (req, res) => {
     let yeniKrediDegeri = null;
     await db.runTransaction(async (t) => {
       const dok = await t.get(kullaniciRef);
-      let veri = dok.exists ? dok.data() : varsayilanKrediVerisi();
+      let veri = krediVerisiniHazirla(dok);
       veri = krediYenile(veri);
 
       if (veri.reklamOduluGunu !== bugunStr) {
