@@ -115,6 +115,31 @@ function krediVerisiniHazirla(dokuman, misafirMi = false) {
   return { ...varsayilan, ...veri, kredi: varsayilan.kredi };
 }
 
+// ── ONBOARDING ÜCRETSİZ HAKLARI ─────────────────────────────
+// Onboarding'de kullanıcıya yaptırdığımız işlemler (ilk plan, ilk sohbet)
+// kredi HARCAMAMALI. İstemci bu istekleri `onboarding: true` ile işaretliyor,
+// ama bayrak tek başına yetmez (değiştirilmiş bir istemci hep gönderebilir):
+// her kullanıcının (UID) her işlem türü için SINIRLI sayıda ücretsiz hakkı
+// var ve Firestore'da sayılıyor. Hak bitince normal kredi düşülüyor.
+const ONBOARDING_UCRETSIZ_HAK = { sohbet: 15, plan: 1, quiz: 1 };
+
+async function onboardingUcretsizHakKullan(uid, tur, misafirMi = false) {
+  const limit = ONBOARDING_UCRETSIZ_HAK[tur] || 0;
+  if (limit <= 0) return false;
+  const ref = db.collection('kullanicilar').doc(String(uid));
+  const alan = `onboardingUcretsiz_${tur}`;
+  return db.runTransaction(async (t) => {
+    const dok = await t.get(ref);
+    const kullanilan = (dok.exists && dok.data()[alan]) || 0;
+    if (kullanilan >= limit) return false;
+    // Belge hiç yoksa kredi alanlarıyla birlikte oluşturuluyor (bkz.
+    // krediVerisiniHazirla — kredisiz belge hatası tekrar yaşanmasın).
+    const yazilacak = dok.exists ? {} : varsayilanKrediVerisi(misafirMi);
+    t.set(ref, { ...yazilacak, [alan]: kullanilan + 1 }, { merge: true });
+    return true;
+  });
+}
+
 function misafirDurumunuGuncelle(veri, gercekMisafirMi) {
   if (veri.misafir === true && gercekMisafirMi === false) {
     veri.misafir = false;
@@ -1053,15 +1078,20 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
 
     // Sabit krediGerekli(10) middleware'i yerine, seçilen moda göre
     // dinamik miktar düşülüyor (Standart 10, Pro 20).
-    try {
-      await krediDus(req.uid, proMu ? KREDI_SOHBET_PRO : KREDI_SOHBET_STANDART, req.misafirMi);
-    } catch (krediHatasi) {
-      if (krediHatasi.message === 'YETERSIZ_KREDI') {
-        return res.status(402).json({
-          hata: 'Yetersiz kredi.', kod: 'YETERSIZ_KREDI', kalanKredi: krediHatasi.kalanKredi,
-        });
+    // Onboarding sohbeti (sınırlı sayıda) ücretsiz — bkz. onboardingUcretsizHakKullan.
+    const onboardingUcretsiz = req.body.onboarding === true
+      && await onboardingUcretsizHakKullan(req.uid, 'sohbet', req.misafirMi);
+    if (!onboardingUcretsiz) {
+      try {
+        await krediDus(req.uid, proMu ? KREDI_SOHBET_PRO : KREDI_SOHBET_STANDART, req.misafirMi);
+      } catch (krediHatasi) {
+        if (krediHatasi.message === 'YETERSIZ_KREDI') {
+          return res.status(402).json({
+            hata: 'Yetersiz kredi.', kod: 'YETERSIZ_KREDI', kalanKredi: krediHatasi.kalanKredi,
+          });
+        }
+        throw krediHatasi;
       }
-      throw krediHatasi;
     }
 
     const sohbetModeli = await sohbetModeliOlustur(dil, proMu);
@@ -1193,15 +1223,20 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, asy
     const { mesajlar, dil, zayifKonular, pro, isim, oncekiOzet, oncekiOzetSayisi } = req.body;
     const proMu = pro === true;
 
-    try {
-      await krediDus(req.uid, proMu ? KREDI_SOHBET_PRO : KREDI_SOHBET_STANDART, req.misafirMi);
-    } catch (krediHatasi) {
-      if (krediHatasi.message === 'YETERSIZ_KREDI') {
-        return res.status(402).json({
-          hata: 'Yetersiz kredi.', kod: 'YETERSIZ_KREDI', kalanKredi: krediHatasi.kalanKredi,
-        });
+    // Onboarding sohbeti (sınırlı sayıda) ücretsiz — bkz. onboardingUcretsizHakKullan.
+    const onboardingUcretsiz = req.body.onboarding === true
+      && await onboardingUcretsizHakKullan(req.uid, 'sohbet', req.misafirMi);
+    if (!onboardingUcretsiz) {
+      try {
+        await krediDus(req.uid, proMu ? KREDI_SOHBET_PRO : KREDI_SOHBET_STANDART, req.misafirMi);
+      } catch (krediHatasi) {
+        if (krediHatasi.message === 'YETERSIZ_KREDI') {
+          return res.status(402).json({
+            hata: 'Yetersiz kredi.', kod: 'YETERSIZ_KREDI', kalanKredi: krediHatasi.kalanKredi,
+          });
+        }
+        throw krediHatasi;
       }
-      throw krediHatasi;
     }
 
     const sohbetModeli = await sohbetModeliOlustur(dil, proMu);
@@ -1461,7 +1496,9 @@ app.post('/quiz', aiIstekSiniri, kimlikDogrula, alanUzunlugunuSinirla('konu', MA
     // kredisini bu tek adımda bitirmesin diye ÜCRETSİZ. Sadece bu özel
     // bayrakla (sadece İlkTanışma ekranından gönderiliyor) işaretlenen
     // istek için kredi düşülmüyor.
-    if (ilkTanismaDiagnostigi !== true) {
+    const quizUcretsiz = ilkTanismaDiagnostigi === true
+      && await onboardingUcretsizHakKullan(req.uid, 'quiz', req.misafirMi);
+    if (!quizUcretsiz) {
       try {
         await krediDus(req.uid, krediMaliyeti, req.misafirMi);
       } catch (krediHatasi) {
@@ -1708,7 +1745,11 @@ Rules:
     // İLK TANIŞMA (onboarding) sırasında oluşturulan İLK plan da —
     // diagnostik quiz gibi — ÜCRETSİZ, kullanıcı daha uygulamayı hiç
     // kullanmadan tüm başlangıç kredisini bitirmesin diye.
-    if (ilkTanismaDiagnostigi !== true) {
+    // Onboarding'deki İLK plan ücretsiz — ama bayrak artık sınırsız değil,
+    // kullanıcı başına tek hak (üretim başarılı olduktan sonra harcanıyor).
+    const onboardingPlani = ilkTanismaDiagnostigi === true || req.body.onboarding === true;
+    const planUcretsiz = onboardingPlani && await onboardingUcretsizHakKullan(req.uid, 'plan', req.misafirMi);
+    if (!planUcretsiz) {
       try {
         await krediDus(req.uid, 50, req.misafirMi);
       } catch (krediHatasi) {
