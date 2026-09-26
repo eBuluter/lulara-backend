@@ -57,7 +57,10 @@ async function kimlikDogrula(req, res, next) {
   }
 }
 
-const MISAFIR_MAKS_KREDI = 50;
+// Yeni akışta HERKES sessiz bir misafir hesabıyla başladığı için bu artık
+// her yeni kullanıcının başlangıç limiti — 50 çok düşük kalıyordu (onboarding
+// sohbetinden sonra ~4 mesaj). 100'e çıkarıldı.
+const MISAFIR_MAKS_KREDI = 100;
 const MISAFIR_SAATLIK_YENILENME = 15;
 const UCRETSIZ_MAKS_KREDI = 200;
 const UCRETSIZ_SAATLIK_YENILENME = 50;
