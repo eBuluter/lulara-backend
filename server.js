@@ -391,7 +391,14 @@ app.post('/profil-guncelle', kimlikDogrula, alanUzunlugunuSinirla('isim', 60), a
     const egitimSeviyesi = (req.body.egitimSeviyesi || '').toString().trim().substring(0, 20);
     const guncelleme = {};
     if (isim) guncelleme.isim = isim;
-    if (egitimSeviyesi) guncelleme.egitimSeviyesi = egitimSeviyesi;
+    if (egitimSeviyesi) {
+      if (!GECERLI_EGITIM_SEVIYELERI.includes(egitimSeviyesi)) {
+        return res.status(400).json({ hata: 'Geçersiz eğitim seviyesi.' });
+      }
+      guncelleme.egitimSeviyesi = egitimSeviyesi;
+      // Profil'den değiştirildiyse sohbet hemen yeni seviyeyle konuşsun.
+      _egitimSeviyesiOnbellegi.delete(req.uid);
+    }
     if (Object.keys(guncelleme).length === 0) {
       return res.status(400).json({ hata: 'Güncellenecek bir alan yok.' });
     }
@@ -404,6 +411,8 @@ app.post('/profil-guncelle', kimlikDogrula, alanUzunlugunuSinirla('isim', 60), a
       const temel = dok.exists ? {} : varsayilanKrediVerisi(req.misafirMi);
       t.set(ref, { ...temel, ...guncelleme }, { merge: true });
     });
+    // Yazım bittikten sonra da temizle (arada eski değer önbelleğe girdiyse).
+    if (guncelleme.egitimSeviyesi) _egitimSeviyesiOnbellegi.delete(req.uid);
     res.json({ basarili: true });
   } catch (hata) {
     console.error('Profil güncelleme hatası:', hata);
@@ -829,6 +838,43 @@ function isimBaglamiOlustur(isim) {
   return `\n\nSTUDENT'S NAME: ${temizIsim}. You know their first name, but use it SPARINGLY — most responses should not include it at all. When it does come up, let it feel natural: a warm greeting, encouragement after they get something right, or a nice moment when they finish a topic. Never force it into short, purely factual replies, and never start every message with it — that would feel robotic, not warm.`;
 }
 
+// ── EĞİTİM SEVİYESİ ─────────────────────────────────────────
+// Onboarding'de (ve Profil'de) seçilen seviye kullanıcı belgesinde duruyor
+// (`egitimSeviyesi`). Sohbet ve plan üretimi bunu SUNUCUDA okuyup anlatımı
+// seviyeye göre ayarlıyor — istemcinin göndermesine gerek yok. Her mesajda
+// Firestore okumamak için kısa süreli bellek önbelleği.
+const GECERLI_EGITIM_SEVIYELERI = ['ilkokul', 'ortaokul', 'lise', 'universite', 'diger'];
+const _egitimSeviyesiOnbellegi = new Map(); // uid -> { seviye, zaman }
+const EGITIM_SEVIYESI_ONBELLEK_MS = 10 * 60 * 1000;
+
+async function egitimSeviyesiniGetir(uid) {
+  const kayit = _egitimSeviyesiOnbellegi.get(uid);
+  if (kayit && Date.now() - kayit.zaman < EGITIM_SEVIYESI_ONBELLEK_MS) return kayit.seviye;
+  let seviye = null;
+  try {
+    const dok = await db.collection('kullanicilar').doc(String(uid)).get();
+    const deger = dok.exists ? dok.data().egitimSeviyesi : null;
+    seviye = GECERLI_EGITIM_SEVIYELERI.includes(deger) ? deger : null;
+  } catch (hata) {
+    console.error('Eğitim seviyesi okunamadı (yok sayılıyor):', hata.message || hata);
+  }
+  _egitimSeviyesiOnbellegi.set(uid, { seviye, zaman: Date.now() });
+  return seviye;
+}
+
+const EGITIM_SEVIYESI_TANIMLARI = {
+  ilkokul: 'primary/elementary school (roughly ages 6–10). Use very simple words and short sentences, concrete everyday examples (food, toys, games, animals), and avoid jargon — if a term is unavoidable, explain it like to a child. Keep answers short and encouraging.',
+  ortaokul: 'middle school (roughly ages 11–14). Use clear, simple language; introduce subject terms but always explain them; relatable examples; step-by-step reasoning without heavy notation.',
+  lise: 'high school (roughly ages 14–18). Explain at curriculum level with correct subject terminology and standard notation; where relevant, connect to typical exam-style questions.',
+  universite: 'university. Use academic depth, precise terminology and formal notation; you may assume solid high-school foundations and go into nuance and rigor.',
+};
+
+function egitimSeviyesiBaglamiOlustur(seviye) {
+  const tanim = EGITIM_SEVIYESI_TANIMLARI[seviye];
+  if (!tanim) return '';
+  return `\n\nSTUDENT'S EDUCATION LEVEL: ${tanim} Treat this as the DEFAULT register for your explanations. If the student explicitly asks for a simpler or more advanced explanation, follow their request instead.`;
+}
+
 // Çok uzun sohbetlerde, eski mesajlar geçmişten kırpılınca AI sohbetin
 // NEDEN başladığını tamamen unutuyordu. Bu, "hafif çıpa"nın (yukarıdaki
 // fonksiyon) YEDEK planı — asıl artık GERÇEK bir AI-üretimi özet
@@ -1148,7 +1194,8 @@ app.post('/sohbet-stream', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrol
 
     const sonMesajVerisi = mesajlarKarsilamaHaric[mesajlarKarsilamaHaric.length - 1];
     const sonMesajParts = [];
-    const baglamNotu = ogrenciBaglamiOlustur(zayifKonular) + isimBaglamiOlustur(isim) + konusmaCipaNotu;
+    const baglamNotu = ogrenciBaglamiOlustur(zayifKonular) + isimBaglamiOlustur(isim)
+      + egitimSeviyesiBaglamiOlustur(await egitimSeviyesiniGetir(req.uid)) + konusmaCipaNotu;
     if (baglamNotu) sonMesajParts.push({ text: baglamNotu.trim() });
     if (sonMesajVerisi.metin && sonMesajVerisi.metin.trim()) {
       sonMesajParts.push({ text: sonMesajVerisi.metin });
@@ -1289,7 +1336,8 @@ app.post('/sohbet', aiIstekSiniri, kimlikDogrula, sohbetUzunlugunuKontrolEt, asy
 
     const sonMesajVerisi = mesajlarKarsilamaHaric[mesajlarKarsilamaHaric.length - 1];
     const sonMesajParts = [];
-    const baglamNotu2 = ogrenciBaglamiOlustur(zayifKonular) + isimBaglamiOlustur(isim) + konusmaCipaNotu2;
+    const baglamNotu2 = ogrenciBaglamiOlustur(zayifKonular) + isimBaglamiOlustur(isim)
+      + egitimSeviyesiBaglamiOlustur(await egitimSeviyesiniGetir(req.uid)) + konusmaCipaNotu2;
     if (baglamNotu2) sonMesajParts.push({ text: baglamNotu2.trim() });
     if (sonMesajVerisi.metin && sonMesajVerisi.metin.trim()) {
       sonMesajParts.push({ text: sonMesajVerisi.metin });
@@ -1677,6 +1725,14 @@ app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuS
     // bir teşhis quiz'inin GERÇEK sonucu da gönderilebiliyor. Bu, prompt'a
     // ek, somut bir sinyal olarak ekleniyor (seviye seçimini geçersiz
     // kılmıyor, onu DESTEKLİYOR/inceltiyor).
+    // Öğrencinin eğitim seviyesi (ilkokul…üniversite): planın derinliği,
+    // dili ve örnekleri buna göre — "Kesirler" ilkokulda ve üniversitede
+    // çok farklı planlanır.
+    const egitimSeviyesi = await egitimSeviyesiniGetir(req.uid);
+    const egitimSeviyesiPlanNotu = EGITIM_SEVIYESI_TANIMLARI[egitimSeviyesi]
+      ? `\nStudent's education level: ${EGITIM_SEVIYESI_TANIMLARI[egitimSeviyesi]} Scope the sub-topics, their depth and wording to what is taught at this level — do not include material far beyond it.`
+      : '';
+
     let teshisTalimati = '';
     if (typeof teshisYuzdesi === 'number') {
       teshisTalimati = `\n\nDIAGNOSTIC CHECK RESULT: Before requesting this plan, the student took a short diagnostic quiz on this exact topic and scored ${teshisYuzdesi}%.`;
@@ -1712,7 +1768,7 @@ This is an EXAM PREPARATION plan. The exam is in ${kalanGun} day(s). Time pressu
 
     const prompt = `You are an expert curriculum designer. A student wants to learn: "${konu}"
 
-Student's current level: ${seviyeAciklama}${teshisTalimati}${zamanTalimati}
+Student's current level: ${seviyeAciklama}${egitimSeviyesiPlanNotu}${teshisTalimati}${zamanTalimati}
 
 Break this topic down into an ORDERED sequence of 4-8 sub-topics that will take the student from their current level to solid mastery of "${konu}".
 
