@@ -2420,6 +2420,11 @@ app.post('/hesabimi-sil', aiIstekSiniri, kimlikDogrula, async (req, res) => {
     // altındaki tüm alt koleksiyonlar) — Google Play'in veri silme kuralı.
     await db.recursiveDelete(db.collection('kullanici_verileri').doc(String(uid)));
 
+    // Kullanıcının kendi davet kodu (kod -> uid eşlemesi) de siliniyor.
+    const kullaniciDok = await db.collection('kullanicilar').doc(String(uid)).get();
+    const davetKodum = kullaniciDok.exists ? kullaniciDok.data().davetKodum : null;
+    if (davetKodum) await db.collection('davet_kodlari').doc(String(davetKodum)).delete();
+
     await db.collection('kullanicilar').doc(String(uid)).delete();
     await admin.auth().deleteUser(uid);
     res.json({ basarili: true });
