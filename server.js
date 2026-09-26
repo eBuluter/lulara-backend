@@ -271,6 +271,9 @@ app.get('/kredi-durumu', kimlikDogrula, async (req, res) => {
     veri = misafirDurumunuGuncelle(veri, req.misafirMi);
     veri = krediYenile(veri);
     await ref.set(veri, { merge: true });
+    // Uygulama her açıldığında çağrılıyor — Premium'un hâlâ geçerli olup
+    // olmadığını en fazla 6 saatte bir Google Play'den kontrol ediyoruz.
+    veri = await premiumuGerekirseDogrula(ref, veri);
 
     const bugun = new Date();
     const bugunStr = `${bugun.getFullYear()}-${bugun.getMonth() + 1}-${bugun.getDate()}`;
@@ -282,6 +285,9 @@ app.get('/kredi-durumu', kimlikDogrula, async (req, res) => {
       kredi: veri.kredi,
       maksKredi,
       premium: veri.premium || false,
+      // Token'ı kayıtlı olmayan eski Premium kullanıcı: uygulama sessizce
+      // "satın alımları geri yükle" yapıp token'ı gönderecek.
+      premiumDogrulamaGerekli: veri.premium === true && !veri.premiumToken,
       misafir: veri.misafir || false,
       streakFreezeHakki: veri.streakFreezeHakki || 0,
       kalanReklamHakki,
@@ -2259,6 +2265,63 @@ async function playYayinciApisi() {
   return google.androidpublisher({ version: 'v3', auth });
 }
 
+// ── PREMIUM SÜRESİ ────────────────────────────────────────────
+// Satın alımda sadece "premium: true" yazılıp bir daha hiç kontrol
+// edilmiyordu — kullanıcı aboneliği iptal etse bile sonsuza kadar Premium
+// kalıyordu. Artık satın alma tokeni saklanıyor ve abonelik durumu Google
+// Play'den periyodik olarak yeniden doğrulanıyor.
+// Google'ın kuralı: iptal edilen abonelik (CANCELED) ödenmiş dönemin
+// SONUNA kadar geçerli; süre dolunca hak biter.
+const PREMIUM_KONTROL_ARALIGI_MS = 6 * 60 * 60 * 1000;
+const HAK_VEREN_ABONELIK_DURUMLARI = [
+  'SUBSCRIPTION_STATE_ACTIVE',
+  'SUBSCRIPTION_STATE_IN_GRACE_PERIOD',
+  'SUBSCRIPTION_STATE_CANCELED',
+];
+
+function abonelikHakVeriyorMu(data) {
+  const bitisler = (data.lineItems || [])
+    .map((li) => Date.parse(li.expiryTime))
+    .filter((n) => Number.isFinite(n));
+  const bitis = bitisler.length ? Math.max(...bitisler) : null;
+  if (!HAK_VEREN_ABONELIK_DURUMLARI.includes(data.subscriptionState)) return { hakli: false, bitis };
+  if (bitis !== null && bitis <= Date.now()) return { hakli: false, bitis };
+  return { hakli: true, bitis };
+}
+
+async function premiumuGerekirseDogrula(ref, veri) {
+  if (!veri.premium || !veri.premiumToken) return veri;
+  const simdi = Date.now();
+  const bitisGectiMi = typeof veri.premiumBitis === 'number' && veri.premiumBitis <= simdi;
+  if (!bitisGectiMi && simdi - (veri.premiumSonKontrol || 0) < PREMIUM_KONTROL_ARALIGI_MS) return veri;
+
+  let hakli, bitis;
+  try {
+    const api = await playYayinciApisi();
+    const sonuc = await api.purchases.subscriptionsv2.get({ packageName: PAKET_ADI, token: veri.premiumToken });
+    ({ hakli, bitis } = abonelikHakVeriyorMu(sonuc.data));
+  } catch (hata) {
+    // 404/410: token artık geçersiz (abonelik çoktan sona ermiş).
+    if (hata.code === 404 || hata.code === 410) {
+      hakli = false; bitis = null;
+    } else {
+      // Geçici hata (ağ, kota): kullanıcının Premium'unu yanlışlıkla almamak için dokunma.
+      console.error('Premium doğrulama hatası (dokunulmadı):', hata.message || hata);
+      return veri;
+    }
+  }
+  const guncelleme = { premiumSonKontrol: simdi };
+  if (bitis) guncelleme.premiumBitis = bitis;
+  if (!hakli) {
+    guncelleme.premium = false;
+    // Premium tavanında (2000) kalan bakiye ücretsiz tavana indiriliyor.
+    guncelleme.kredi = Math.min(veri.kredi || 0, UCRETSIZ_MAKS_KREDI);
+    console.log(`Premium sona erdi: ${ref.id}`);
+  }
+  await ref.set(guncelleme, { merge: true });
+  return { ...veri, ...guncelleme };
+}
+
 app.post('/satin-alma-dogrula', aiIstekSiniri, kimlikDogrula, async (req, res) => {
   try {
     const { urunId, satinAlmaTokeni } = req.body;
@@ -2278,9 +2341,12 @@ app.post('/satin-alma-dogrula', aiIstekSiniri, kimlikDogrula, async (req, res) =
         packageName: PAKET_ADI,
         token: satinAlmaTokeni,
       });
-      const durum = sonuc.data.subscriptionState;
-      const gecerliMi = durum === 'SUBSCRIPTION_STATE_ACTIVE' || durum === 'SUBSCRIPTION_STATE_IN_GRACE_PERIOD';
-      if (!gecerliMi) return res.status(400).json({ hata: 'Abonelik geçerli değil.' });
+      // İptal edilmiş ama dönemi bitmemiş abonelik de geçerli (geri yükleme
+      // için gerekli) — kural premiumuGerekirseDogrula ile aynı.
+      const { hakli, bitis: premiumBitis } = abonelikHakVeriyorMu(sonuc.data);
+      if (!hakli) return res.status(400).json({ hata: 'Abonelik geçerli değil.' });
+      const oncekiDok = await kullaniciRef.get();
+      const zatenPremiumMu = oncekiDok.exists && oncekiDok.data().premium === true;
 
       // DÜZELTME: Premium'a geçince sadece "premium: true" işaretleniyordu,
       // kredi bakiyesine hiç dokunulmuyordu — kullanıcı önceden az
@@ -2290,9 +2356,13 @@ app.post('/satin-alma-dogrula', aiIstekSiniri, kimlikDogrula, async (req, res) =
       // — gerçek bir "hoş geldin" hissi versin diye.
       await kullaniciRef.set({
         premium: true,
+        // Periyodik yeniden doğrulama için (bkz. premiumuGerekirseDogrula).
+        premiumToken: satinAlmaTokeni,
+        ...(premiumBitis ? { premiumBitis } : {}),
         premiumSonKontrol: Date.now(),
-        kredi: PREMIUM_MAKS_KREDI,
-        sonYenilenmeZamani: Date.now(),
+        // Krediyi tavana sadece YENİ Premium'a geçişte doldur — zaten Premium
+        // olan birinin "geri yükle" ile istediği zaman 2000'e dolmasın.
+        ...(zatenPremiumMu ? {} : { kredi: PREMIUM_MAKS_KREDI, sonYenilenmeZamani: Date.now() }),
       }, { merge: true });
     } else if (URUN_KREDI_MIKTARLARI[urunId]) {
       const sonuc = await yayinciApi.purchases.products.get({
