@@ -849,7 +849,9 @@ function isimBaglamiOlustur(isim) {
 // (`egitimSeviyesi`). Sohbet ve plan üretimi bunu SUNUCUDA okuyup anlatımı
 // seviyeye göre ayarlıyor — istemcinin göndermesine gerek yok. Her mesajda
 // Firestore okumamak için kısa süreli bellek önbelleği.
-const GECERLI_EGITIM_SEVIYELERI = ['ilkokul', 'ortaokul', 'lise', 'universite', 'diger'];
+// İlkokul yok: uygulama 13 yaş ve üstü içindir (gizlilik politikası). Eski
+// kayıtlarda 'ilkokul' kalmışsa geçersiz sayılır, anlatım varsayılana döner.
+const GECERLI_EGITIM_SEVIYELERI = ['ortaokul', 'lise', 'universite', 'diger'];
 const _egitimSeviyesiOnbellegi = new Map(); // uid -> { seviye, zaman }
 const EGITIM_SEVIYESI_ONBELLEK_MS = 10 * 60 * 1000;
 
@@ -869,7 +871,6 @@ async function egitimSeviyesiniGetir(uid) {
 }
 
 const EGITIM_SEVIYESI_TANIMLARI = {
-  ilkokul: 'primary/elementary school (roughly ages 6–10). Use very simple words and short sentences, concrete everyday examples (food, toys, games, animals), and avoid jargon — if a term is unavoidable, explain it like to a child. Keep answers short and encouraging.',
   ortaokul: 'middle school (roughly ages 11–14). Use clear, simple language; introduce subject terms but always explain them; relatable examples; step-by-step reasoning without heavy notation.',
   lise: 'high school (roughly ages 14–18). Explain at curriculum level with correct subject terminology and standard notation; where relevant, connect to typical exam-style questions.',
   universite: 'university. Use academic depth, precise terminology and formal notation; you may assume solid high-school foundations and go into nuance and rigor.',
@@ -1731,8 +1732,8 @@ app.post('/ogrenme-plani-olustur', aiIstekSiniri, kimlikDogrula, alanUzunlugunuS
     // bir teşhis quiz'inin GERÇEK sonucu da gönderilebiliyor. Bu, prompt'a
     // ek, somut bir sinyal olarak ekleniyor (seviye seçimini geçersiz
     // kılmıyor, onu DESTEKLİYOR/inceltiyor).
-    // Öğrencinin eğitim seviyesi (ilkokul…üniversite): planın derinliği,
-    // dili ve örnekleri buna göre — "Kesirler" ilkokulda ve üniversitede
+    // Öğrencinin eğitim seviyesi (ortaokul…üniversite): planın derinliği,
+    // dili ve örnekleri buna göre — "Kesirler" ortaokulda ve üniversitede
     // çok farklı planlanır.
     const egitimSeviyesi = await egitimSeviyesiniGetir(req.uid);
     const egitimSeviyesiPlanNotu = EGITIM_SEVIYESI_TANIMLARI[egitimSeviyesi]
